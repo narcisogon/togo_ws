@@ -1,0 +1,140 @@
+/**:
+  ros__parameters:
+    use_sim_time: true
+
+    frames/odom: odom
+    frames/baselink: base_link
+    frames/lidar: seyond_robin_w_lidar_frame
+    frames/imu: seyond_robin_w_imu_frame
+    odom/odom_frame: odom
+
+    pointcloud/deskew: true
+    pointcloud/deskew/maxUniqueTimestamps: 96
+    pointcloud/voxelize: true
+
+    imu/calibration: true
+    odom/imu/calibration/gyro: true
+    odom/imu/calibration/accel: true
+    odom/imu/calibration/time: 3.0
+    odom/imu/approximateGravity: false
+    odom/imu/bufferSize: 5000
+
+    # Gazebo currently runs Earth gravity. Change this for moon-gravity tests.
+    odom/gravity: 9.80665
+    odom/computeTimeOffset: false
+
+    # Current simulated sensor placement in base_link. These are base_link -> sensor.
+    extrinsics/baselink2imu/t: [0.45, -0.05, 0.50]
+    extrinsics/baselink2imu/R: [1.0, 0.0, 0.0,
+                                0.0, 1.0, 0.0,
+                                0.0, 0.0, 1.0]
+    extrinsics/baselink2lidar/t: [0.30, 0.0, 0.42]
+    extrinsics/baselink2lidar/R: [1.0, 0.0, 0.0,
+                                  0.0, 1.0, 0.0,
+                                  0.0, 0.0, 1.0]
+
+    map/waitUntilMove: false
+    map/dense/filtered: false
+    map/sparse/leafSize: 0.25
+    # Keep DLIO's built-in full Path quiet. Use /dlio/path_simple from the
+    # launch helper for RViz instead.
+    odom/path/publish: false
+    odom/path/publishEveryN: 5
+    odom/path/maxPoses: 2000
+    odom/path/minDistance: 0.05
+
+    odom/preprocessing/cropBoxFilter/size: 1.0
+    odom/preprocessing/voxelFilter/res: 0.25
+
+    odom/keyframe/threshD: 0.4
+    odom/keyframe/threshR: 8.0
+
+    odom/submap/keyframe/knn: 14
+    odom/submap/keyframe/kcv: 14
+    odom/submap/keyframe/kcc: 14
+    odom/gicp/minNumPoints: 64
+    odom/gicp/kCorrespondences: 16
+    odom/gicp/maxCorrespondenceDistance: 1.0
+    odom/gicp/maxIterations: 32
+    odom/gicp/transformationEpsilon: 0.005
+    odom/gicp/rotationEpsilon: 0.005
+    odom/gicp/initLambdaFactor: 1e-9
+    odom/gicp/rejectBadCorrections: true
+    odom/gicp/maxCorrectionTranslation: 0.20
+    odom/gicp/maxCorrectionRotationDeg: 12.0
+    odom/gicp/spinProtection/enabled: true
+    odom/gicp/spinProtection/angularRate: 0.25
+    odom/gicp/spinProtection/maxCorrectionTranslation: 0.008
+    odom/gicp/spinProtection/recoveryTranslationStep: 0.002
+    odom/gicp/spinProtection/recoveryRotationStepDeg: 4.0
+    odom/gicp/spinProtection/useImuPriorOnReject: false
+    odom/gicp/timingProtection/enabled: true
+    odom/gicp/timingProtection/imuAgeMs: 100.0
+    odom/gicp/timingProtection/maxCorrectionTranslation: 0.06
+    odom/gicp/timingProtection/maxCorrectionRotationDeg: 8.0
+    odom/gicp/timingProtection/recoveryTranslationStep: 0.008
+    odom/gicp/timingProtection/recoveryRotationStepDeg: 1.5
+    odom/gicp/timingProtection/dropStaleScans: true
+    odom/gicp/timingProtection/dropImuAgeMs: 120.0
+    odom/gicp/timingProtection/dropRejectStreak: 0
+    odom/gicp/timingProtection/maxIterations: 12
+    odom/gicp/adaptiveIterations/enabled: true
+    odom/gicp/adaptiveIterations/weakOverlap: 0.35
+    odom/gicp/adaptiveIterations/weakHessianCondition: 100000.0
+    odom/gicp/adaptiveIterations/slowSolveMs: 25.0
+    odom/gicp/adaptiveIterations/weakMaxIterations: 10
+    odom/gicp/solveTimeBudget/enabled: true
+    odom/gicp/solveTimeBudget/maxMs: 25.0
+    odom/gicp/solveTimeBudget/partialScale: 0.15
+    odom/gicp/freezeOnBadCorrection: false
+    odom/gicp/badCorrectionFreezeStreak: 14
+    odom/gicp/badCorrectionRecoveryTranslationStep: 0.04
+    odom/gicp/badCorrectionRecoveryRotationStepDeg: 3.0
+    odom/gicp/badCorrectionMaxLinearSpeed: 0.9
+    odom/gicp/badCorrectionVelocityDecay: 0.92
+    odom/gicp/badCorrectionVelocityDecayStreak: 8
+    odom/gicp/badCorrectionHoldStreak: 0
+    odom/imuBridge/clamp/enabled: true
+    odom/imuBridge/clamp/maxTranslation: 0.08
+    odom/imuBridge/clamp/maxRotationDeg: 5.0
+    odom/gicp/quality/usePartialDegenerate: true
+    odom/gicp/quality/minOverlap: 0.50
+    odom/gicp/quality/degenerateMinOverlap: 0.25
+    odom/gicp/quality/maxFitness: 5.0
+    odom/gicp/quality/degenerateMaxFitness: 25.0
+    odom/gicp/quality/minHessianEigen: 1.0e-6
+    odom/gicp/quality/maxHessianCondition: 1.0e8
+    odom/gicp/quality/partialCorrectionScale: 0.20
+    odom/gicp/quality/partialMaxTranslation: 1.5
+    odom/gicp/quality/partialMaxRotationDeg: 45.0
+    odom/keyframe/trustRegistration: true
+    odom/keyframe/trust/minOverlap: 0.78
+    odom/keyframe/trust/maxFitness: 1.2
+    odom/keyframe/trust/maxHessianCondition: 30000.0
+    odom/keyframe/trust/maxSolveTimeMs: 75.0
+    odom/keyframe/trust/minInliers: 850
+    odom/keyframe/trust/allowPartial: false
+    odom/gicp/innovationGate/enabled: true
+    odom/gicp/innovationGate/partialScale: 0.20
+    odom/gicp/innovationGate/maxTranslation: 0.08
+    odom/gicp/innovationGate/maxYawDeg: 8.0
+    odom/gicp/degeneracyProjection/enabled: true
+    odom/gicp/degeneracyProjection/condition: 30000.0
+    odom/gicp/degeneracyProjection/minScale: 0.10
+    odom/gicp/recovery/enabled: true
+    odom/gicp/recovery/rejectStreak: 5
+    odom/gicp/recovery/maxCorrespondenceDistance: 2.0
+    odom/gicp/recovery/maxIterations: 16
+    odom/gicp/recovery/acceptTranslation: 0.6
+    odom/gicp/recovery/acceptRotationDeg: 15.0
+    odom/gicp/recovery/minOverlap: 0.45
+    odom/gicp/recovery/maxFitness: 3.0
+    odom/gicp/recovery/attemptSpacing: 6
+    odom/gicp/recovery/skipWhenTimingActive: true
+    odom/gicp/recovery/timeBudgetMs: 60.0
+    odom/gicp/recovery/yawOffsetsDeg: [0.0, -8.0, 8.0]
+    odom/gicp/recovery/ndt/enabled: false
+    odom/gicp/recovery/ndt/resolution: 1.0
+    odom/gicp/recovery/ndt/stepSize: 0.1
+    odom/gicp/recovery/ndt/transformationEpsilon: 0.01
+    odom/gicp/recovery/ndt/maxIterations: 10

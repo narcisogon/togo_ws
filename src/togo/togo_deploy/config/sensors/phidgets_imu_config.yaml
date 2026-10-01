@@ -1,9 +1,9 @@
 /**:
-  imu:
+  phidgets_spatial:
     ros__parameters:
       serial: -1
       hub_port: 0
-      frame_id: 'imu_link'
+      frame_id: 'imu_0_link'
       publish_rate: 0.0
       time_resynchronization_interval_ms: 5000
       data_interval_ms: 20

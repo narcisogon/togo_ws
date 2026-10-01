@@ -1,0 +1,76 @@
+dlio_odom_node:
+  ros__parameters:
+    # This profile is the final live-rover override layered after
+    # seyond_dlio_graph.yaml. Launch arguments remain the final authority.
+    use_sim_time: false
+    frames/odom: odom
+    frames/baselink: base_link
+    frames/lidar: lidar3d_0_laser
+    frames/imu: imu_0_link
+    odom/odom_frame: odom
+
+    # Keep the terminal usable on the rover. Diagnostics continue to publish
+    # on /dlio/frontend_diagnostics and are retained in this separate history.
+    debug/printPeriod: 0.0
+    diagnostics/historySize: 80
+    diagnostics/historyFile: /tmp/dlio_live_diagnostic_history.log
+    diagnostics/imuWaitTimeoutMs: 5000.0
+
+    # /iv_points has native absolute FLOAT64 `timestamp` values. The live
+    # timestamp-corrector shifts them and the cloud header by the same offset;
+    # synthetic column timing must remain disabled.
+    pointcloud/deskew: false
+    pointcloud/syntheticTiming/enabled: false
+    pointcloud/syntheticTiming/scanPeriodSec: 0.1
+    pointcloud/syntheticTiming/reverseColumns: false
+    pointcloud/deskew/maxUniqueTimestamps: 96
+
+    # A size of 1.0 removes the complete [-1,+1] m cube. On this rover that
+    # discarded useful nearby ground and caused z drift; 0.5 fixed the run.
+    odom/preprocessing/cropBoxFilter/size: 0.5
+
+    # Real Husky sensor geometry measured from the rover TF tree.
+    extrinsics/baselink2lidar/t: [0.400, 0.000, 0.313]
+    extrinsics/baselink2lidar/R: [1.0, 0.0, 0.0,
+                                  0.0, 1.0, 0.0,
+                                  0.0, 0.0, 1.0]
+    extrinsics/baselink2imu/t: [0.059, 0.000, 0.161275]
+    extrinsics/baselink2imu/R: [1.0, 0.0, 0.0,
+                                0.0, 1.0, 0.0,
+                                0.0, 0.0, 1.0]
+
+    # Hold the rover stationary for the first three seconds so startup gyro,
+    # accelerometer, and gravity calibration sees a genuinely static sample.
+    imu/calibration: true
+    odom/imu/calibration/gyro: true
+    odom/imu/calibration/accel: true
+    odom/imu/calibration/time: 3.0
+    odom/imu/approximateGravity: true
+    odom/gravity: 9.80665
+    odom/computeTimeOffset: false
+
+    # Start from the replay-validated behavior. Enable deskew or the ground
+    # constraint through the live launch only after confirming timing again.
+    odom/groundConstraint/enabled: false
+
+dlio_map_node:
+  ros__parameters:
+    use_sim_time: false
+    odom/odom_frame: odom
+    map/sparse/leafSize: 0.25
+
+graph_based_slam:
+  ros__parameters:
+    use_sim_time: false
+    global_frame_id: map
+    odom_frame_id: odom
+    publish_map_to_odom_tf: true
+
+    # Live outputs are deliberately separate from replay and simulation.
+    map_save_dir: /ws/src/lidarslam_ros2/output/husky_seyond_live_real
+    dem/output_dir: /ws/src/lidarslam_ros2/output/husky_seyond_live_real/lunar_dem
+
+    # Keep normal operation concise. DLIO and the timestamp adapter still
+    # provide focused diagnostics when timing or registration is unhealthy.
+    debug_flag: false
+

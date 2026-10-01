@@ -1,0 +1,160 @@
+<?xml version='1.0'?>
+<sdf version='1.9'>
+  <world name='lunar_surface'>
+
+    <!-- ══ PHYSICS ══ -->
+    <physics name='1ms' type='ignored'>
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+
+    <plugin name='gz::sim::systems::Physics'
+            filename='gz-sim-physics-system'>
+      <!-- DART's Gazebo 8 SDF loader cannot construct terrain mesh or
+           heightmap collisions. Classic Bullet supports the decimated mesh
+           and, unlike Bullet Featherstone, permits the A300 to skid-steer. -->
+      <engine>
+        <filename>gz-physics-bullet-plugin</filename>
+      </engine>
+    </plugin>
+    <plugin name='gz::sim::systems::UserCommands'
+            filename='gz-sim-user-commands-system'/>
+    <plugin name='gz::sim::systems::SceneBroadcaster'
+            filename='gz-sim-scene-broadcaster-system'/>
+    <plugin name='gz::sim::systems::Contact'
+            filename='gz-sim-contact-system'/>
+
+    <!-- Earth-gravity A/B test for terrain traction. Keep DLIO's
+         odom/gravity setting matched to this value. -->
+    <gravity>0 0 -9.82</gravity>
+    <magnetic_field>1e-09 1e-09 1e-09</magnetic_field>
+
+    <!-- ══ SCENE ══ -->
+    <scene>
+      <ambient>0.25 0.25 0.25 1</ambient>
+      <background>0.0 0.0 0.0 1</background>
+      <shadows>true</shadows>
+      <grid>false</grid>
+      <origin_visual>false</origin_visual>
+    </scene>
+
+    <!-- ══ SUN — low grazing angle, harsh unfiltered ══ -->
+    <light name='sun' type='directional'>
+      <pose>0 0 100 0 0 0</pose>
+      <cast_shadows>true</cast_shadows>
+      <intensity>1.2</intensity>
+      <direction>-0.5 0.1 -0.86</direction>
+      <diffuse>1.00 0.98 0.95 1</diffuse>
+      <specular>0.30 0.28 0.25 1</specular>
+      <attenuation>
+        <range>100000</range>
+        <linear>0.0</linear>
+        <constant>1.0</constant>
+        <quadratic>0.0</quadratic>
+      </attenuation>
+    </light>
+
+    <!-- Earthshine — faint blue fill, no shadows -->
+    <light name='earthshine' type='directional'>
+      <pose>0 0 50 0 0 0</pose>
+      <cast_shadows>false</cast_shadows>
+      <intensity>0.10</intensity>
+      <direction>0.3 -0.2 -0.9</direction>
+      <diffuse>0.55 0.65 0.90 1</diffuse>
+      <specular>0.0 0.0 0.0 1</specular>
+      <attenuation>
+        <range>100000</range>
+        <linear>0.0</linear>
+        <constant>1.0</constant>
+        <quadratic>0.0</quadratic>
+      </attenuation>
+    </light>
+
+    <!-- Overhead fill — fixes black top-down view -->
+    <light name='overhead_fill' type='directional'>
+      <pose>0 0 100 0 0 0</pose>
+      <cast_shadows>false</cast_shadows>
+      <intensity>0.25</intensity>
+      <direction>0.0 0.0 -1.0</direction>
+      <diffuse>0.70 0.68 0.65 1</diffuse>
+      <specular>0.0 0.0 0.0 1</specular>
+      <attenuation>
+        <range>100000</range>
+        <linear>0.0</linear>
+        <constant>1.0</constant>
+        <quadratic>0.0</quadratic>
+      </attenuation>
+    </light>
+
+    <!-- ══ LUNAR TERRAIN ══
+         collision uses a decimated DAE; visual uses the detailed DAE
+         both sample the same heightmap over the same 30m area
+         Mean height: 0.082m
+         Robot spawn z: 1.282m                    -->
+    <model name='lunar_terrain'>
+      <static>true</static>
+      <link name='link'>
+
+        <collision name='collision'>
+          <geometry>
+            <mesh>
+              <uri>../media/lunar_terrain_collision.dae</uri>
+            </mesh>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>0.8</mu>
+                <mu2>0.8</mu2>
+                <fdir1>0 0 0</fdir1>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000</threshold>
+            </bounce>
+            <contact>
+              <ode>
+                <kp>10000000</kp>
+                <kd>10</kd>
+                <min_depth>0.0</min_depth>
+                <max_vel>0.01</max_vel>
+              </ode>
+            </contact>
+          </surface>
+        </collision>
+
+        <visual name='visual'>
+          <geometry>
+            <mesh>
+              <uri>../media/lunar_terrain.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+
+      </link>
+    </model>
+
+    <!-- ══ ROCKS ══
+         56 rocks total
+         Clustered near crater rims + ridge flanks + isolated scatter
+         Static — collision boxes, sphere visuals              -->
+
+    <!-- ══ GUI CAMERA ══ -->
+    <gui fullscreen='0'>
+      <camera name='user_camera'>
+        <pose>-20 -20 25 0 0.70 0.80</pose>
+        <view_controller>orbit</view_controller>
+        <projection_type>perspective</projection_type>
+        <clip>
+          <near>0.1</near>
+          <far>500</far>
+        </clip>
+      </camera>
+    </gui>
+
+  </world>
+</sdf>

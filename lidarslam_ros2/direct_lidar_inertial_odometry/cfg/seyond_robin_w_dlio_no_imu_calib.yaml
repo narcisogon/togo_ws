@@ -1,0 +1,84 @@
+/**:
+  ros__parameters:
+    use_sim_time: true
+
+    frames/odom: odom
+    frames/baselink: base_link
+    frames/lidar: seyond_robin_w_lidar_frame
+    frames/imu: seyond_robin_w_imu_frame
+    odom/odom_frame: odom
+
+    pointcloud/deskew: true
+    pointcloud/voxelize: true
+
+    # Backtrack profile: bypass startup bias averaging to test whether the
+    # 3-second self-calibration is creating yaw/spin drift.
+    imu/calibration: false
+    imu/intrinsics/accel/bias: [0.0, 0.0, 0.0]
+    imu/intrinsics/gyro/bias: [0.0, 0.0, 0.0]
+    imu/intrinsics/accel/sm: [1.0, 0.0, 0.0,
+                              0.0, 1.0, 0.0,
+                              0.0, 0.0, 1.0]
+    odom/imu/calibration/gyro: false
+    odom/imu/calibration/accel: false
+    odom/imu/calibration/time: 0.0
+    odom/imu/approximateGravity: false
+    odom/imu/bufferSize: 5000
+
+    # Gazebo currently runs Earth gravity. Change this for moon-gravity tests.
+    odom/gravity: 9.80665
+    odom/computeTimeOffset: false
+
+    # Current simulated sensor placement in base_link. These are base_link -> sensor.
+    extrinsics/baselink2imu/t: [0.45, -0.05, 0.50]
+    extrinsics/baselink2imu/R: [1.0, 0.0, 0.0,
+                                0.0, 1.0, 0.0,
+                                0.0, 0.0, 1.0]
+    extrinsics/baselink2lidar/t: [0.30, 0.0, 0.42]
+    extrinsics/baselink2lidar/R: [1.0, 0.0, 0.0,
+                                  0.0, 1.0, 0.0,
+                                  0.0, 0.0, 1.0]
+
+    map/waitUntilMove: false
+    map/dense/filtered: false
+    map/sparse/leafSize: 0.25
+
+    odom/preprocessing/cropBoxFilter/size: 1.0
+    odom/preprocessing/voxelFilter/res: 0.25
+
+    odom/keyframe/threshD: 0.5
+    odom/keyframe/threshR: 20.0
+
+    odom/submap/keyframe/knn: 10
+    odom/submap/keyframe/kcv: 10
+    odom/submap/keyframe/kcc: 10
+    odom/gicp/minNumPoints: 64
+    odom/gicp/kCorrespondences: 16
+    odom/gicp/maxCorrespondenceDistance: 1.0
+    odom/gicp/maxIterations: 48
+    odom/gicp/transformationEpsilon: 0.005
+    odom/gicp/rotationEpsilon: 0.005
+    odom/gicp/initLambdaFactor: 1e-9
+    odom/gicp/rejectBadCorrections: true
+    odom/gicp/maxCorrectionTranslation: 0.20
+    odom/gicp/maxCorrectionRotationDeg: 12.0
+    odom/gicp/spinProtection/enabled: true
+    odom/gicp/spinProtection/angularRate: 0.25
+    odom/gicp/spinProtection/maxCorrectionTranslation: 0.008
+    odom/gicp/spinProtection/recoveryTranslationStep: 0.002
+    odom/gicp/spinProtection/recoveryRotationStepDeg: 4.0
+    odom/gicp/spinProtection/useImuPriorOnReject: false
+    odom/gicp/timingProtection/enabled: true
+    odom/gicp/timingProtection/imuAgeMs: 100.0
+    odom/gicp/timingProtection/maxCorrectionTranslation: 0.06
+    odom/gicp/timingProtection/maxCorrectionRotationDeg: 8.0
+    odom/gicp/timingProtection/recoveryTranslationStep: 0.008
+    odom/gicp/timingProtection/recoveryRotationStepDeg: 1.5
+    odom/gicp/timingProtection/dropStaleScans: true
+    odom/gicp/timingProtection/dropImuAgeMs: 120.0
+    odom/gicp/timingProtection/dropRejectStreak: 0
+    odom/gicp/timingProtection/maxIterations: 16
+    odom/gicp/freezeOnBadCorrection: true
+    odom/gicp/badCorrectionFreezeStreak: 14
+    odom/gicp/badCorrectionRecoveryTranslationStep: 0.04
+    odom/gicp/badCorrectionRecoveryRotationStepDeg: 3.0

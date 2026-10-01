@@ -1,0 +1,109 @@
+/**:
+  ros__parameters:
+    use_sim_time: true
+    debug/printPeriod: 1.0
+    diagnostics/historySize: 80
+    diagnostics/lagWarningMs: 90.0
+    diagnostics/imuAgeWarningMs: 120.0
+    diagnostics/keyframeWarningCount: 220
+    diagnostics/submapWarningPoints: 250000
+    diagnostics/historyFile: /tmp/dlio_diagnostic_history.log
+
+    frames/odom: odom
+    frames/baselink: base_link
+    frames/lidar: seyond_robin_w_lidar_frame
+    frames/imu: seyond_robin_w_imu_frame
+    odom/odom_frame: odom
+
+    # Keep this launch-overridable with DLIO_DESKEW. In sim, start with
+    # DLIO_DESKEW=false while testing yaw-circle stability.
+    pointcloud/deskew: true
+    pointcloud/voxelize: true
+
+    imu/calibration: true
+    odom/imu/calibration/gyro: true
+    odom/imu/calibration/accel: true
+    odom/imu/calibration/time: 3.0
+    odom/imu/approximateGravity: false
+    odom/imu/bufferSize: 5000
+
+    odom/gravity: 9.80665
+    odom/computeTimeOffset: false
+
+    # Simulated sensor placement in base_link. If TF says otherwise, update
+    # these values, but zero-extrinsic testing showed this is not the only issue.
+    extrinsics/baselink2imu/t: [0.45, -0.05, 0.50]
+    extrinsics/baselink2imu/R: [1.0, 0.0, 0.0,
+                                0.0, 1.0, 0.0,
+                                0.0, 0.0, 1.0]
+    extrinsics/baselink2lidar/t: [0.30, 0.0, 0.42]
+    extrinsics/baselink2lidar/R: [1.0, 0.0, 0.0,
+                                  0.0, 1.0, 0.0,
+                                  0.0, 0.0, 1.0]
+
+    # Conservative mode: avoid DLIO widening thresholds after it starts drifting.
+    adaptive: false
+
+    map/waitUntilMove: false
+    map/dense/filtered: false
+    map/sparse/leafSize: 0.15
+
+    # Retain more geometry than the default profile. This costs CPU but helps
+    # yaw-only and circle tests where sparse points can under-constrain GICP.
+    odom/preprocessing/cropBoxFilter/size: 0.5
+    odom/preprocessing/voxelFilter/res: 0.12
+
+    # Add keyframes on smaller rotations so the local submap stays usable while
+    # circling in place or driving tight turns.
+    odom/keyframe/threshD: 0.25
+    odom/keyframe/threshR: 8.0
+
+    odom/submap/keyframe/knn: 15
+    odom/submap/keyframe/kcv: 15
+    odom/submap/keyframe/kcc: 15
+
+    # Tighter GICP prevents distant/wrong correspondences from dragging the
+    # pose sideways during yaw-heavy motion.
+    odom/gicp/minNumPoints: 128
+    odom/gicp/kCorrespondences: 24
+    odom/gicp/maxCorrespondenceDistance: 0.35
+    odom/gicp/maxIterations: 64
+    odom/gicp/transformationEpsilon: 0.002
+    odom/gicp/rotationEpsilon: 0.002
+    odom/gicp/initLambdaFactor: 1e-8
+    odom/gicp/rejectBadCorrections: true
+    odom/gicp/maxCorrectionTranslation: 0.20
+    odom/gicp/maxCorrectionRotationDeg: 12.0
+    # Fast in-place yaw tends to make GICP invent sideways translation. During
+    # spin-heavy motion, clamp translation corrections much harder to prevent
+    # spiral maps. For a 15 Hz LiDAR, rover spin rates above about 0.8 rad/s
+    # are already aggressive.
+    odom/gicp/spinProtection/enabled: true
+    odom/gicp/spinProtection/angularRate: 0.25
+    odom/gicp/spinProtection/maxCorrectionTranslation: 0.008
+    odom/gicp/spinProtection/recoveryTranslationStep: 0.002
+    odom/gicp/spinProtection/recoveryRotationStepDeg: 4.0
+    odom/gicp/spinProtection/useImuPriorOnReject: false
+    # If DLIO falls behind the LiDAR/IMU stream, scan matching becomes stale.
+    # Clamp GICP corrections during stale-timing windows so a lag spike cannot
+    # create a large sideways jump or spiral.
+    odom/gicp/timingProtection/enabled: true
+    odom/gicp/timingProtection/imuAgeMs: 100.0
+    odom/gicp/timingProtection/maxCorrectionTranslation: 0.06
+    odom/gicp/timingProtection/maxCorrectionRotationDeg: 8.0
+    odom/gicp/timingProtection/recoveryTranslationStep: 0.008
+    odom/gicp/timingProtection/recoveryRotationStepDeg: 1.5
+    odom/gicp/timingProtection/dropStaleScans: true
+    # Drop stale LiDAR frames before scan matching. The code now measures this
+    # against the estimated scan end, so 120 ms is roughly two 15 Hz frames.
+    odom/gicp/timingProtection/dropImuAgeMs: 120.0
+    # Do not wait for a long rejection streak; stale queued frames poison the
+    # submap match and can freeze odometry before recovery starts.
+    odom/gicp/timingProtection/dropRejectStreak: 0
+    odom/gicp/timingProtection/maxIterations: 16
+    odom/gicp/freezeOnBadCorrection: true
+    # Freeze for a few rejected frames, then recover with bounded steps instead
+    # of accepting a multi-meter jump or parking odometry forever.
+    odom/gicp/badCorrectionFreezeStreak: 14
+    odom/gicp/badCorrectionRecoveryTranslationStep: 0.04
+    odom/gicp/badCorrectionRecoveryRotationStepDeg: 3.0

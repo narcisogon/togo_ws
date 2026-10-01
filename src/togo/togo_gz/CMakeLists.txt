@@ -12,7 +12,7 @@ ament_target_dependencies(gz_rgbd_point_fixer rclcpp tf2_sensor_msgs tf2_geometr
 
 # install
 install(
-  DIRECTORY config launch urdf worlds
+  DIRECTORY config launch urdf worlds models media   
   DESTINATION share/${PROJECT_NAME}
 )
 

@@ -13,7 +13,7 @@
       odom0_config: [True, True, False, False, False, True, True, True, False, False, False, True, False, False, False]
       odom0_differential: False
       odom0_queue_size: 10
-      imu0: 'sensors/imu/data'
+      imu0: 'sensors/imu_0/data'
       imu0_config: [False, False, False, False, False, False, False, False, False, False, False, True, True, False, False]
       imu0_differential: False
       imu0_queue_size: 10

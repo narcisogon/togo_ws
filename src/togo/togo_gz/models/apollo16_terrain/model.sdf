@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <model name="apollo16_terrain">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision">
+        <geometry>
+          <heightmap>
+            <uri>file:///home/er4-user/ws/src/togo/togo_gz/media/dem/Apollo16-Origin-synthetic-curve_0.00_0.00-_x_0_y_0_size_2048x2048.tif</uri>
+            <size>100 100 10</size>
+            <pos>0 0 0</pos>
+          </heightmap>
+        </geometry>
+      </collision>
+      <visual name="visual">
+        <geometry>
+          <heightmap>
+            <uri>file:///home/er4-user/ws/src/togo/togo_gz/media/dem/Apollo16-Origin-synthetic-curve_0.00_0.00-_x_0_y_0_size_2048x2048.tif</uri>
+            <size>100 100 10</size>
+            <pos>0 0 0</pos>
+            <texture>
+              <diffuse>file:///home/er4-user/ws/src/togo/togo_gz/media/dem/slipmap-2048.tif</diffuse>
+              <normal>file:///home/er4-user/ws/src/togo/togo_gz/media/dem/slipmap-2048.tif</normal>
+              <size>10</size>
+            </texture>
+          </heightmap>
+        </geometry>
+      </visual>
+    </link>
+  </model>
+</sdf>

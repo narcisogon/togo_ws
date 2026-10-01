@@ -142,8 +142,8 @@
     <xacro:a300_suspension_beam side="right"/>
 
     <!-- Add wheels -->
-    <xacro:include filename="$(find clearpath_platform_description)/urdf/a300/drivetrain/wheels.urdf.xacro"/>
-    <xacro:a300_drivetrain_wheels front_wheels="${front_wheels}" rear_wheels="${rear_wheels}"/>
+    <xacro:include filename="$(find togo_description)/urdf/a300/outdoor_wheels_no_slip.urdf.xacro"/>
+    <xacro:togo_a300_outdoor_wheels_no_slip/>
 
     <!-- Add drivetrain -->
     <xacro:include filename="$(find togo_description)/urdf/a300/drivetrain.urdf.xacro"/>

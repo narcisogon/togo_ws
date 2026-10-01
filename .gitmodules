@@ -19,3 +19,6 @@
 [submodule "references/clearpath/clearpath_simulator"]
 	path = references/clearpath/clearpath_simulator
 	url = https://github.com/clearpathrobotics/clearpath_simulator.git
+[submodule "lidarslam_ros2/Thirdparty/gtsam"]
+	path = lidarslam_ros2/Thirdparty/gtsam
+	url = https://github.com/borglab/gtsam.git

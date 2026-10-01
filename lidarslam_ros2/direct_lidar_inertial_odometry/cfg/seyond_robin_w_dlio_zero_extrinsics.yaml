@@ -1,0 +1,55 @@
+/**:
+  ros__parameters:
+    use_sim_time: true
+
+    frames/odom: odom
+    frames/baselink: base_link
+    frames/lidar: seyond_robin_w_lidar_frame
+    frames/imu: seyond_robin_w_imu_frame
+    odom/odom_frame: odom
+
+    pointcloud/deskew: true
+    pointcloud/voxelize: true
+
+    imu/calibration: true
+    odom/imu/calibration/gyro: true
+    odom/imu/calibration/accel: true
+    odom/imu/calibration/time: 3.0
+    odom/imu/approximateGravity: false
+    odom/imu/bufferSize: 5000
+
+    odom/gravity: 9.80665
+    odom/computeTimeOffset: false
+
+    # Debug profile: pretend IMU, LiDAR, and base_link are colocated.
+    # If circle drift improves a lot with this file, the normal extrinsic
+    # values or frame convention are the root cause.
+    extrinsics/baselink2imu/t: [0.0, 0.0, 0.0]
+    extrinsics/baselink2imu/R: [1.0, 0.0, 0.0,
+                                0.0, 1.0, 0.0,
+                                0.0, 0.0, 1.0]
+    extrinsics/baselink2lidar/t: [0.0, 0.0, 0.0]
+    extrinsics/baselink2lidar/R: [1.0, 0.0, 0.0,
+                                  0.0, 1.0, 0.0,
+                                  0.0, 0.0, 1.0]
+
+    map/waitUntilMove: false
+    map/dense/filtered: false
+    map/sparse/leafSize: 0.25
+
+    odom/preprocessing/cropBoxFilter/size: 1.0
+    odom/preprocessing/voxelFilter/res: 0.25
+
+    odom/keyframe/threshD: 0.5
+    odom/keyframe/threshR: 20.0
+
+    odom/submap/keyframe/knn: 10
+    odom/submap/keyframe/kcv: 10
+    odom/submap/keyframe/kcc: 10
+    odom/gicp/minNumPoints: 64
+    odom/gicp/kCorrespondences: 16
+    odom/gicp/maxCorrespondenceDistance: 1.0
+    odom/gicp/maxIterations: 48
+    odom/gicp/transformationEpsilon: 0.005
+    odom/gicp/rotationEpsilon: 0.005
+    odom/gicp/initLambdaFactor: 1e-9

@@ -15,3 +15,25 @@ docker-compose.yml
 
 .pixi/*
 !.pixi/config.toml
+
+# Large data files
+bags/
+*.bag
+*.mcap
+*.pcd
+*.tgz
+*.db3
+rosbag2_*/
+
+# GTSAM build artifacts
+lidarslam_ros2/Thirdparty/gtsam/build/
+
+# SLAM output
+slam_output/
+
+# Large terrain/media files
+*.dae
+
+lidarslam_ros2/bags/
+lidarslam_ros2/output/
+lidarslam_ros2/slam_output/

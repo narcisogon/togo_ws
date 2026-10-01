@@ -62,7 +62,7 @@
   gz_type_name: "gz.msgs.PointCloudPacked"
   direction: GZ_TO_ROS
 
-# Rear OAK-D camera
+## Rear OAK-D camera
 - ros_topic_name: "/husky/sensors/rear_oakd/rgb/camera_info"
   gz_topic_name: "/sensors/camera_1/camera_info"
   ros_type_name: "sensor_msgs/msg/CameraInfo"
@@ -93,6 +93,7 @@
   gz_type_name: "gz.msgs.PointCloudPacked"
   direction: GZ_TO_ROS
 
+
 # TODO this topic is available in Gazebo, but Emily's not sure what comparable topic on hardware is?
 # - ros_topic_name: "/husky/sensors/seyond/scan"
 #   gz_topic_name: "/sensors/lidar3d_0/scan"
@@ -101,14 +102,14 @@
 #   direction: GZ_TO_ROS
 
 # Seyond LIDAR
-- ros_topic_name: "husky/sensors/seyond/points"
+- ros_topic_name: "/husky/sensors/seyond/points"
   gz_topic_name: "/sensors/lidar3d_0/scan/points"
   ros_type_name: "sensor_msgs/msg/PointCloud2"
   gz_type_name: "gz.msgs.PointCloudPacked"
   direction: GZ_TO_ROS
 
 # Phidgets IMU
-- ros_topic_name: "/husky/sensors/phidgets/data_raw"
+- ros_topic_name: "/husky/sensors/imu_0/data_raw"
   gz_topic_name: "sensors/imu_0/data"
   ros_type_name: "sensor_msgs/msg/Imu"
   gz_type_name: "gz.msgs.IMU"
@@ -116,13 +117,13 @@
 
 # FixPosition GPS
 # TODO Emily has no clue here...
-- ros_topic_name: "/husky/sensors/fixposition/right_gps/fix"
+- ros_topic_name: "/husky/sensors/ins_0/gps_0/data_raw"
   gz_topic_name: "/sensors/ins_0/gps_0/fix"
   ros_type_name: "sensor_msgs/msg/NavSatFix"
   gz_type_name: "gz.msgs.NavSat"
   direction: GZ_TO_ROS
 
-- ros_topic_name: "/husky/sensors/fixposition/left_gps/fix"
+- ros_topic_name: "/husky/sensors/ins_0/gps_1/data_raw"
   gz_topic_name: "/sensors/ins_0/gps_1/fix"
   ros_type_name: "sensor_msgs/msg/NavSatFix"
   gz_type_name: "gz.msgs.NavSat"

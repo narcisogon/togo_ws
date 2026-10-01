@@ -1,20 +1,3 @@
-# Copyright (c) 2026, United States Government, as represented by the
-# Administrator of the National Aeronautics and Space Administration.
-#
-# All rights reserved.
-#
-# This software is licensed under the Apache License, Version 2.0
-# (the "License"); you may not use this file except in compliance with the
-# License. You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations
-# under the License.
-
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch_ros.actions import ComposableNodeContainer
@@ -79,7 +62,7 @@ def generate_launch_description():
     launch_phidgets = LaunchConfiguration("launch_phidgets")
     rviz = LaunchConfiguration("rviz")
     default_ns = "husky"
-    sensor_ns = "sensors"
+    sensor_ns = "husky/sensors"
 
     # INCLUDE PACKAGES
     pkg_togo_deploy = FindPackageShare("togo_deploy")
@@ -100,13 +83,9 @@ def generate_launch_description():
     seyond_node = Node(
         package="seyond",
         executable="seyond_node",
-        name="lidar3d",
         namespace=sensor_ns,
         parameters=[
             {"config_path": config_seyond},
-        ],
-        remappings=[
-            ("/iv_points", "/sensors/lidar3d/iv_points"),
         ],
         condition=IfCondition(launch_seyond),
     )
@@ -114,7 +93,7 @@ def generate_launch_description():
     # OAK-D Front Camera
     front_depthai_oakd_node = ComposableNode(
         package="depthai_ros_driver",
-        name="rgbd_front",
+        name="front_oakd",
         namespace=sensor_ns,
         plugin="depthai_ros_driver::Camera",
         parameters=[config_front_oakd],
@@ -125,18 +104,18 @@ def generate_launch_description():
     front_depthai_pcl_node = ComposableNode(
         package="depth_image_proc",
         plugin="depth_image_proc::PointCloudXyzNode",
-        name="point_cloud_xyz_front",
+        name="front_point_cloud_xyz_node",
         namespace=sensor_ns,
         remappings=[
-            ("image_rect", "/sensors/rgbd_front/stereo/image_raw"),
-            ("camera_info", "/sensors/rgbd_front/stereo/camera_info"),
-            ("points", "/sensors/rgbd_front/points"),
+            ("image_rect", "/husky/sensors/front_oakd/stereo/image_raw"),
+            ("camera_info", "/husky/sensors/front_oakd/stereo/camera_info"),
+            ("points", "/husky/sensors/front_oakd/points"),
         ],
         condition=IfCondition(launch_front_oakd),
     )
 
     front_image_processing_container = ComposableNodeContainer(
-        name="image_processing_container_front",
+        name="front_image_processing_container",
         package="rclcpp_components",
         namespace=sensor_ns,
         executable="component_container",
@@ -151,7 +130,7 @@ def generate_launch_description():
     # OAK-D Rear Camera
     rear_depthai_oakd_node = ComposableNode(
         package="depthai_ros_driver",
-        name="rgbd_rear",
+        name="rear_oakd",
         namespace=sensor_ns,
         plugin="depthai_ros_driver::Camera",
         parameters=[config_rear_oakd],
@@ -162,18 +141,18 @@ def generate_launch_description():
     rear_depthai_pcl_node = ComposableNode(
         package="depth_image_proc",
         plugin="depth_image_proc::PointCloudXyzNode",
-        name="point_cloud_xyz_rear",
+        name="rear_point_cloud_xyz_node",
         namespace=sensor_ns,
         remappings=[
-            ("image_rect", "/sensors/rgbd_rear/stereo/image_raw"),
-            ("camera_info", "/sensors/rgbd_rear/stereo/camera_info"),
-            ("points", "/sensors/rgbd_rear/points"),
+            ("image_rect", "/rear_oakd/stereo/image_raw"),
+            ("camera_info", "/rear_oakd/stereo/camera_info"),
+            ("points", "/rear_oakd/points"),
         ],
         condition=IfCondition(launch_rear_oakd),
     )
 
     rear_image_processing_container = ComposableNodeContainer(
-        name="image_processing_container_rear",
+        name="rear_image_processing_container",
         package="rclcpp_components",
         namespace=sensor_ns,
         executable="component_container",
@@ -201,13 +180,13 @@ def generate_launch_description():
     phidgets_node = ComposableNode(
         package="phidgets_spatial",
         plugin="phidgets::SpatialRosI",
-        name="imu",
+        name="phidgets_spatial",
         namespace=sensor_ns,
         parameters=[config_phidgets],
         remappings=[
-            ("imu/data_raw", "/sensors/imu/data_raw"),
-            ("imu/is_calibrated", "/sensors/imu/is_calibrated"),
-            ("imu/mag", "/sensors/imu/mag"),
+            ("imu/data_raw", "/husky/sensors/imu_0/data_raw"),
+            ("imu/is_calibrated", "/husky/sensors/imu_0/is_calibrated"),
+            ("imu/mag", "/husky/sensors/imu_0/mag"),
         ],
         condition=IfCondition(launch_phidgets),
     )
@@ -217,12 +196,12 @@ def generate_launch_description():
         package="imu_filter_madgwick",
         plugin="ImuFilterMadgwickRos",
         name="imu_filter_madgwick",
-        namespace=sensor_ns,
+        namespace=default_ns,
         parameters=[config_imu_filter],
         remappings=[
-            ("imu/data", "/sensors/imu/data"),
-            ("imu/data_raw", "/sensors/imu/data_raw"),
-            ("imu/mag", "/sensors/imu/mag"),
+            ("imu/data", "sensors/imu_0/data"),
+            ("imu/data_raw", "sensors/imu_0/data_raw"),
+            ("imu/mag", "sensors/imu_0/mag"),
         ],
         condition=IfCondition(launch_phidgets),
     )

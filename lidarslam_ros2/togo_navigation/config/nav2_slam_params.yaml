@@ -1,0 +1,297 @@
+bt_navigator:
+  ros__parameters:
+    use_sim_time: true
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /dlio/odometry
+    bt_loop_duration: 10
+    default_server_timeout: 2000
+    wait_for_service_timeout: 5000
+
+controller_server:
+  ros__parameters:
+    use_sim_time: true
+    enable_stamped_cmd_vel: true
+    controller_frequency: 20.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    odom_topic: /dlio/odometry
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.25
+      movement_time_allowance: 10.0
+    general_goal_checker:
+      stateful: true
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 0.25
+    FollowPath:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.75
+      lookahead_dist: 0.8
+      min_lookahead_dist: 0.35
+      max_lookahead_dist: 1.2
+      lookahead_time: 1.5
+      rotate_to_heading_angular_vel: 0.9
+      transform_tolerance: 0.5
+      use_velocity_scaled_lookahead_dist: true
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 0.8
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_speed: 0.08
+      allow_reversing: false
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 0.785
+      max_angular_accel: 1.5
+      max_robot_pose_search_dist: 10.0
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      use_sim_time: true
+      update_frequency: 10.0
+      publish_frequency: 5.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 8
+      height: 8
+      resolution: 0.10
+      transform_tolerance: 0.5
+      footprint: "[[0.55, 0.38], [0.55, -0.38], [-0.55, -0.38], [-0.55, 0.38]]"
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: local_hazards
+        local_hazards:
+          topic: /local_hazard_debug_points
+          data_type: PointCloud2
+          marking: true
+          clearing: true
+          # local_hazard_debug_points' cloud is stamped in the "odom" frame
+          # (a world-fixed frame, not a sensor frame), so without this,
+          # Nav2's raytrace-based clearing would default to using that same
+          # frame_id as the "sensor" and trace rays from the origin of odom
+          # (wherever the robot started) instead of the robot's current
+          # position -- explicitly pointing at base_link fixes that.
+          sensor_frame: base_link
+          min_obstacle_height: 0.0
+          max_obstacle_height: 1.0
+          obstacle_max_range: 6.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 6.0
+          raytrace_min_range: 0.0
+          observation_persistence: 0.4
+          expected_update_rate: 0.5
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # Was 0.30/6.0 -- narrow buffer meant the robot could get quite
+        # close to a marked hazard before cost meaningfully increased.
+        # Wider radius + lower scaling factor = more gradual falloff = a
+        # bigger real standoff margin around obstacles/hazards.
+        inflation_radius: 0.45
+        cost_scaling_factor: 4.0
+      always_send_full_costmap: true
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      use_sim_time: true
+      update_frequency: 2.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_link
+      resolution: 0.15
+      track_unknown_space: true
+      transform_tolerance: 0.7
+      footprint: "[[0.55, 0.38], [0.55, -0.38], [-0.55, -0.38], [-0.55, 0.38]]"
+      plugins: ["static_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: true
+        subscribe_to_updates: true
+        trinary_costmap: false
+        # Was 95, then 70. hazard_patch_node now bakes a hard-lethal core
+        # (hard_lethal_radius_m) directly into the map at cost=100, with a
+        # soft preference gradient capped at soft_max_cost (60) beyond it --
+        # so lethality is now encoded at the source, not by this threshold.
+        # Setting this back to 100 means ONLY cells hazard_patch_node itself
+        # marked lethal block planning; the soft gradient (5-60) stays
+        # genuinely soft and shapes path preference via cost_travel_multiplier
+        # instead of accidentally becoming a second, wider lethal wall.
+        lethal_cost_threshold: 100
+        topic: /map
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # Was 0.5 -- robot's circumscribed radius is sqrt(0.55^2+0.38^2) ~=
+        # 0.67m, so 0.5 left corners technically uninflated right at the
+        # lethal boundary. 0.7 covers the full footprint with a small margin.
+        inflation_radius: 0.5
+        # Was 4.0 -- with lethal_cost_threshold back to 100, inflation is
+        # only responsible for a thin footprint-safety film right at the
+        # lethal boundary now (preference shaping lives in the hazard
+        # gradient instead), so a steeper falloff keeps it tight and
+        # non-overlapping with the hazard gradient's own preference shaping.
+        cost_scaling_factor: 2.0
+      always_send_full_costmap: true
+
+planner_server:
+  ros__parameters:
+    use_sim_time: true
+    expected_planner_frequency: 5.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_smac_planner::SmacPlanner2D"
+      tolerance: 0.5
+      downsample_costmap: false
+      downsampling_factor: 2
+      allow_unknown: true
+      max_iterations: 500000
+      max_on_approach_iterations: 1000
+      # Was 2.0 -- allowed a single plan to take 10x longer than
+      # expected_planner_frequency (5.0 = 0.2s) wants, which is inconsistent
+      # on its own and was likely what let planning time creep past the
+      # action server's acknowledge deadline under the continuous replanning
+      # this BT does. Forces a (possibly less optimal but existing) plan
+      # back faster instead of risking a full timeout.
+      max_planning_time: 1.0
+      # Was 2.0 -- too willing to trade a small distance saving for hugging
+      # right along a hazard's inflated edge instead of favoring open space
+      # between hazards. Higher value weighs cost more heavily relative to
+      # raw distance, biasing the planner toward the low-cost centerline
+      # between obstacles even at the expense of a longer path. This also
+      # gives more margin against the "gives up near a hazard" abort case --
+      # a path that stays further from the lethal threshold in the first
+      # place has more room to absorb pose jitter/noise before it looks like
+      # an imminent collision.
+      cost_travel_multiplier: 5.0
+      # Was false -- recomputed the full obstacle heuristic from scratch on
+      # every single replan even when the goal hadn't changed. Caching it
+      # avoids that redundant work on the common case (continuous replanning
+      # to the same goal).
+      cache_obstacle_heuristic: true
+      debug_visualizations: false
+      use_final_approach_orientation: false
+      smooth_path: true
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
+        do_refinement: true
+        refinement_num: 2
+
+smoother_server:
+  ros__parameters:
+    use_sim_time: true
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0e-10
+      max_its: 1000
+      do_refinement: true
+
+behavior_server:
+  ros__parameters:
+    use_sim_time: true
+    enable_stamped_cmd_vel: true
+    local_costmap_topic: local_costmap/costmap_raw
+    global_costmap_topic: global_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors::DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 0.5
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 0.5
+    min_rotational_vel: 0.05
+    rotational_acc_lim: 1.5
+
+collision_monitor:
+  ros__parameters:
+    use_sim_time: true
+    base_frame_id: base_link
+    odom_frame_id: odom
+    transform_tolerance: 0.5
+    source_timeout: 1.0
+    base_shift_correction: true
+    stop_pub_timeout: 2.0
+    cmd_vel_in_topic: /cmd_vel_smoothed
+    cmd_vel_out_topic: /platform_velocity_controller/cmd_vel
+    polygons: ["StopPolygon"]
+    StopPolygon:
+      type: "polygon"
+      points: "[[0.80, 0.45], [0.80, -0.45], [-0.20, -0.45], [-0.20, 0.45]]"
+      action_type: "stop"
+      min_points: 4
+      visualize: true
+      polygon_pub_topic: "collision_monitor/stop_polygon"
+    observation_sources: ["lidar"]
+    lidar:
+      type: "pointcloud"
+      topic: /dlio/deskewed
+      enabled: true
+      min_height: -0.20
+      max_height: 1.40
+
+waypoint_follower:
+  ros__parameters:
+    use_sim_time: true
+    loop_rate: 20
+    stop_on_failure: false
+    waypoint_task_executor_plugin: wait_at_waypoint
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: true
+      waypoint_pause_duration: 200
+
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: true
+    enable_stamped_cmd_vel: true
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.6, 0.0, 0.8]
+    min_velocity: [-0.2, 0.0, -0.8]
+    max_accel: [0.4, 0.0, 0.8]
+    max_decel: [-0.5, 0.0, -0.8]
+    odom_topic: /dlio/odometry
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
+
+lifecycle_manager_navigation:
+  ros__parameters:
+    use_sim_time: true
+    autostart: true
+    node_names:
+      - controller_server
+      - smoother_server
+      - planner_server
+      - behavior_server
+      - bt_navigator
+      - waypoint_follower
+      - velocity_smoother
+      - collision_monitor    

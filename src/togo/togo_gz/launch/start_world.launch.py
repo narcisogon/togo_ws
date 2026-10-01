@@ -1,20 +1,3 @@
-# Copyright (c) 2026, United States Government, as represented by the
-# Administrator of the National Aeronautics and Space Administration.
-#
-# All rights reserved.
-#
-# This software is licensed under the Apache License, Version 2.0
-# (the "License"); you may not use this file except in compliance with the
-# License. You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations
-# under the License.
-
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -42,7 +25,7 @@ def launch_setup(context):
         ),
         launch_arguments={
             "gz_args": [
-                "-r -v 4 " + world_file
+                "-r -s -v 4 " + world_file
             ],  # -r to unpause the sim (required to load controls), -v verbose, 0-4 verbosity level with 4 as debug
             "on_exit_shutdown": "True",
         }.items(),
@@ -66,14 +49,14 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "world_pkg",
-            default_value="practice_worlds",
+            default_value="togo_gz",
             description="Name of the package that has the world file",
         )
     )
     declared_arguments.append(
         DeclareLaunchArgument(
             "world",
-            default_value="obstacle_lot.sdf",
+            default_value="togo_parking_lot_world.sdf",
             description="Name of the world file; must exist in worlds/ directory of world_pkg",
         )
     )

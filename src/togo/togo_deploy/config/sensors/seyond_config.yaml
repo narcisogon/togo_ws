@@ -8,11 +8,11 @@ lidars:
       packet_mode: false                              #Packet mode (true: packets + pointcloud, false: direct pointcloud)
       aggregate_num: 20                               #Aggregate number
 
-      frame_id: lidar3d_laser                         #Frame id
+      frame_id: lidar3d_0_laser                       #Frame id
       packet_topic: /iv_packets                       #Packet topic
       frame_topic: /iv_points                         #Frame topic
 
-      lidar_name: lidar3d                             #Lidar name
+      lidar_name: lidar3d_0                           #Lidar name
       lidar_ip: 192.168.131.25                        #Lidar ip
       port: 8010                                      #Lidar port
       udp_port: 8010                                  #Udp port

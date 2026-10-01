@@ -1,0 +1,221 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DLIO + Graph SLAM — Husky / seyond sim
+#
+# Sensor topics:
+#   LiDAR : /husky/sensors/seyond/points
+#   IMU   : /husky/sensors/imu_0/data_raw
+#
+# ⚠️  EXTRINSICS: RKO used TF lookup. DLIO requires static values.
+#     Pull the real transforms from the husky URDF/TF tree with:
+#       ros2 run tf2_ros tf2_echo base_link lidar3d_0_laser
+#       ros2 run tf2_ros tf2_echo base_link imu_0_link
+#     then replace the placeholder identity values below.
+# ─────────────────────────────────────────────────────────────────────────────
+
+dlio_odom_node:
+  ros__parameters:
+    use_sim_time: true
+
+    # ── Frames — must match husky sim TF tree ─────────────────────────────────
+    frames/odom:     odom
+    frames/baselink: base_link
+    frames/lidar:    lidar3d_0_laser
+    frames/imu:      imu_0_link
+    odom/odom_frame: odom
+
+    # ── Frontend point processing ─────────────────────────────────────────────
+    pointcloud/deskew: false
+    pointcloud/voxelize:            true
+    map/waitUntilMove: true
+    map/dense/filtered:             false
+    map/sparse/leafSize:            0.25
+    odom/preprocessing/cropBoxFilter/size:  1.0
+    odom/preprocessing/voxelFilter/res:     0.25
+
+    # ── IMU setup — Gazebo Earth gravity ─────────────────────────────────────
+    imu/calibration:              true
+    odom/imu/calibration/gyro:    true
+    odom/imu/calibration/accel:   true
+    odom/imu/calibration/time:    3.0
+    odom/imu/approximateGravity:  false
+    odom/imu/bufferSize:          5000
+    odom/gravity:                 9.80665
+    odom/computeTimeOffset:       false
+
+# ── Extrinsics: base_link -> lidar3d_0_laser ─────────────────────────────
+    # Source: ros2 run tf2_ros tf2_echo base_link lidar3d_0_laser
+    extrinsics/baselink2lidar/t: [0.400, 0.000, 0.313]
+    extrinsics/baselink2lidar/R: [1.000, 0.000, 0.000,
+                                  0.000, 1.000, 0.000,
+                                  0.000, 0.000, 1.000]
+
+    # ── Extrinsics: base_link -> imu_0_link ──────────────────────────────────
+    # Source: ros2 run tf2_ros tf2_echo base_link imu_0_link
+    extrinsics/baselink2imu/t: [0.059, 0.000, 0.161]
+    extrinsics/baselink2imu/R: [1.000, 0.000, 0.000,
+                                0.000, 1.000, 0.000,
+                                0.000, 0.000, 1.000]
+
+    # ── Keyframes / submap ────────────────────────────────────────────────────
+    odom/keyframe/threshD:        0.4
+    odom/keyframe/threshR:        8.0
+    odom/submap/keyframe/knn:     14
+    odom/submap/keyframe/kcv:     14
+    odom/submap/keyframe/kcc:     14
+
+    # ── DLIO scan-to-map GICP ─────────────────────────────────────────────────
+    odom/gicp/minNumPoints:              64
+    odom/gicp/kCorrespondences:          16
+    odom/gicp/maxCorrespondenceDistance: 1.0
+    odom/gicp/maxIterations:             48
+    odom/gicp/transformationEpsilon:     0.005
+    odom/gicp/rotationEpsilon:           0.005
+    odom/gicp/initLambdaFactor:          1.0e-9
+
+    # ── Correction guards ─────────────────────────────────────────────────────
+    odom/gicp/rejectBadCorrections:              false
+    odom/gicp/spinProtection/enabled:            false
+    odom/gicp/timingProtection/enabled:          false
+    odom/gicp/timingProtection/dropStaleScans:   false
+    odom/gicp/freezeOnBadCorrection:             false
+
+    odom/gicp/maxCorrectionTranslation:          0.35
+    odom/gicp/maxCorrectionRotationDeg:          18.0
+    odom/gicp/spinProtection/angularRate:        0.30
+    odom/gicp/spinProtection/maxCorrectionTranslation:      0.0
+    odom/gicp/spinProtection/recoveryTranslationStep:       0.006
+    odom/gicp/spinProtection/recoveryRotationStepDeg:       6.0
+    odom/gicp/spinProtection/useImuPriorOnReject:           true
+    odom/gicp/timingProtection/imuAgeMs:                    140.0
+    odom/gicp/timingProtection/maxCorrectionTranslation:    0.10
+    odom/gicp/timingProtection/maxCorrectionRotationDeg:    10.0
+    odom/gicp/timingProtection/recoveryTranslationStep:     0.008
+    odom/gicp/timingProtection/recoveryRotationStepDeg:     2.0
+    odom/gicp/timingProtection/dropImuAgeMs:                220.0
+    odom/gicp/timingProtection/dropRejectStreak:            0
+    odom/gicp/timingProtection/maxIterations:               20
+    odom/gicp/badCorrectionFreezeStreak:                    3
+    odom/gicp/badCorrectionRecoveryTranslationStep:         0.04
+    odom/gicp/badCorrectionRecoveryRotationStepDeg:         3.0
+    odom/gicp/badCorrectionMaxLinearSpeed:                  0.9
+    odom/gicp/badCorrectionVelocityDecay:                   0.92
+    odom/gicp/badCorrectionVelocityDecayStreak:             8
+    odom/gicp/badCorrectionHoldStreak:                      0
+
+    # ── Quality / degeneracy ──────────────────────────────────────────────────
+    odom/gicp/quality/usePartialDegenerate:   true
+    odom/gicp/quality/minOverlap:             0.50
+    odom/gicp/quality/degenerateMinOverlap:   0.25
+    odom/gicp/quality/maxFitness:             5.0
+    odom/gicp/quality/degenerateMaxFitness:   25.0
+    odom/gicp/quality/minHessianEigen:        1.0e-6
+    odom/gicp/quality/maxHessianCondition:    1.0e8
+    odom/gicp/quality/partialCorrectionScale: 0.20
+    odom/gicp/quality/partialMaxTranslation:  1.5
+    odom/gicp/quality/partialMaxRotationDeg:  45.0
+
+    # ── Innovation gate ───────────────────────────────────────────────────────
+    odom/gicp/innovationGate/enabled:       true
+    odom/gicp/innovationGate/partialScale:  0.20
+    odom/gicp/innovationGate/maxTranslation: 0.20
+    odom/gicp/innovationGate/maxYawDeg: 15.0
+
+    # ── Degeneracy projection ─────────────────────────────────────────────────
+    odom/gicp/degeneracyProjection/enabled:   true
+    odom/gicp/degeneracyProjection/condition: 30000.0
+    odom/gicp/degeneracyProjection/minScale:  0.10
+
+    # ── Recovery mode ─────────────────────────────────────────────────────────
+    odom/gicp/recovery/enabled:                 true
+    odom/gicp/recovery/rejectStreak:            5
+    odom/gicp/recovery/maxCorrespondenceDistance: 2.0
+    odom/gicp/recovery/maxIterations:           48
+    odom/gicp/recovery/acceptTranslation:       0.6
+    odom/gicp/recovery/acceptRotationDeg:       15.0
+    odom/gicp/recovery/minOverlap:              0.45
+    odom/gicp/recovery/maxFitness:              3.0
+    odom/gicp/recovery/attemptSpacing:          6
+    odom/gicp/recovery/skipWhenTimingActive:    true
+    odom/gicp/recovery/yawOffsetsDeg:           [0.0, -8.0, 8.0]
+
+# ─────────────────────────────────────────────────────────────────────────────
+dlio_map_node:
+  ros__parameters:
+    use_sim_time:        true
+    odom/odom_frame:     odom
+    map/sparse/leafSize: 0.25
+
+# ─────────────────────────────────────────────────────────────────────────────
+graph_based_slam:
+  ros__parameters:
+    use_sim_time:                    true
+    use_odom_input:                  true
+    global_frame_id:                 map
+    odom_frame_id:                   odom
+    publish_map_to_odom_tf:          true
+    map_to_odom_tf_future_offset_sec: 0.35
+    modified_map_publish_period_sec: 1.0
+    modified_map_leaf_size:          0.15
+    publish_modified_map_timed:      true
+    modified_map_timed_leaf_size:    0.15
+    map_save_dir: /home/er4-user/slam_ws/src/lidarslam_ros2/output/husky_seyond_graph
+
+    # ── Backend registration ──────────────────────────────────────────────────
+    registration_method: NDT
+    ndt_resolution:      5.0
+    ndt_num_threads:     0
+    voxel_leaf_size:     0.2
+
+    # ── Loop closure ─────────────────────────────────────────────────────────
+    loop_detection_period:                    1000
+    threshold_loop_closure_score:             15.0
+    scan_context_loop_closure_score_threshold: 1.5
+    use_distance_loop_candidates:             false
+    distance_loop_closure:                    15.0
+    range_of_searching_loop_closure:          50.0
+    search_submap_num:                        5
+    submap_distance_threshold:                0.1
+    num_adjacent_pose_cnstraints:             5
+    max_loop_candidate_count:                 3
+    loop_edge_dedup_index_window:             20
+    loop_max_translation_delta:               15.0
+    loop_max_rotation_delta_deg:              45.0
+    loop_max_translation_delta_descriptor:    4.0
+    loop_max_rotation_delta_deg_descriptor:   20.0
+    adjacent_edge_info_weight:                1000.0
+    loop_edge_info_weight:                    200.0
+    loop_edge_robust_kernel_delta:            1.0
+
+    # ── Descriptors ───────────────────────────────────────────────────────────
+    use_scan_context:              true
+    scan_context_threshold:        0.30
+    use_bev_descriptor:            false
+    use_solid_descriptor:          false
+    use_triangle_descriptor:       false
+    prefer_scan_context_candidates: true
+    use_3d_bbs_for_scan_context:   false
+    use_dynamic_object_filter:     false
+    use_pcd_cache:                 true
+    use_save_map_in_loop:          true
+    debug_flag:                    true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reference path publisher — loaded by gazebo_pose_to_aligned_path.py via
+# --params-file so all ground-truth tuning stays in this one YAML.
+# ─────────────────────────────────────────────────────────────────────────────
+reference_path_publisher:
+  ros__parameters:
+    use_sim_time:           true
+    pose_topic:             /gazebo/dynamic_pose
+    frontend_odom_topic:    /dlio/odometry
+    path_topic:             /reference/path
+    fixed_frame:            map
+    align_to_frontend:      true
+    zero_start:             true
+    # Gazebo model names to try in order — matches husky sim model naming
+    model_names:            husky,husky_0000,robot,base_link,chassis_link
+    fallback_transform_index: 0
+    allow_fallback_entity:  true
+    min_distance_m:         0.02
+    max_poses:              12000
+    extra_yaw_offset_deg:   0.0

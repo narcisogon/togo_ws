@@ -1,20 +1,3 @@
-# Copyright (c) 2026, United States Government, as represented by the
-# Administrator of the National Aeronautics and Space Administration.
-#
-# All rights reserved.
-#
-# This software is licensed under the Apache License, Version 2.0
-# (the "License"); you may not use this file except in compliance with the
-# License. You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations
-# under the License.
-
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -177,26 +160,18 @@ def generate_launch_description():
         ],
     )
 
-    # This is not currently launched from here, as we require running micro-ros in
-    # a separate container.
-
-    # NOTE for now, the micro-ROS agent gets started in its own docker container
-    # due to dependency versioning issues when installing in the Togo docker image.
-    # Until this is fixed, there is no need to launch the micro-ROS agent here,
-    # with the remainder of the Husky hardware comm nodes. If/when we resolve that
-    # issue we should uncomment this and launch the agent from here.
-    # node_micro_ros_agent = Node(
-    #     name="micro_ros_agent",
-    #     executable="micro_ros_agent",
-    #     package="micro_ros_agent",
-    #     namespace=default_ns,
-    #     output="screen",
-    #     arguments=[
-    #         "udp4",
-    #         "--port",
-    #         "11411",
-    #     ],
-    # )
+    node_micro_ros_agent = Node(
+        name="micro_ros_agent",
+        executable="micro_ros_agent",
+        package="micro_ros_agent",
+        namespace=default_ns,
+        output="screen",
+        arguments=[
+            "udp4",
+            "--port",
+            "11411",
+        ],
+    )
 
     node_lighting_node = Node(
         name="lighting_node",
@@ -291,13 +266,16 @@ def generate_launch_description():
     nodes = [
         node_wireless_watcher,
         node_battery_state_control,
+        # NOTE for now, the micro-ROS agent gets started in its own docker container
+        # due to dependency versioning issues when installing in the Togo docker image.
+        # Until this is fixed, there is no need to launch the micro-ROS agent here,
+        # with the remainder of the Husky hardware comm nodes.
+        # node_micro_ros_agent,
         node_lighting_node,
         node_lynx_control,
         node_a300_fan_control,
         node_a300_sw_low_soc_cutoff,
         node_pinout_control_node,
-        # See comment above.
-        # node_micro_ros_agent,
     ]
     processes = [process_configure_mcu]
 

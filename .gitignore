@@ -3,6 +3,9 @@ build/*
 install/*
 log/*
 .ccache/
+Thirdparty/gtsam/build/
+
+
 
 # bash history
 .bash/*
@@ -13,3 +16,46 @@ log/*
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+
+# PCD point cloud files
+*.pcd
+
+# ROS Bags
+*.bag
+*.mcap
+*.tgz
+*.db3
+rosbag2_*/
+
+# ROS 2 colcon build artifacts (inside src/)
+src/build/
+src/install/
+src/log/
+**/build/
+**/install/
+**/log/
+
+# SLAM output
+slam_output/
+
+# Large terrain/media files
+*.dae
+src/lunar_terrain.png
+src/togo/togo_gz/media/lunar_terrain.png
+src/togo/togo_gz/media/lunar_terrain_collision.png
+src/togo/togo_gz/media/dem/
+src/moon_mesh_generator/*.png
+src/moon_mesh_generator/*.xyz
+
+# Local shell/environment artifacts
+.env
+/.Xauthority
+/
+
+# Generated Python and editor artifacts
+__pycache__/
+*.py[cod]
+*.backup
+
+# Large third-party source checkout; restored separately as a submodule.
+lidarslam_ros2/Thirdparty/gtsam/

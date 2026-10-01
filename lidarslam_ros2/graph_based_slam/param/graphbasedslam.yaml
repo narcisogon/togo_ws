@@ -1,0 +1,175 @@
+graph_based_slam:
+    ros__parameters:
+      registration_method: "GICP"
+      ndt_resolution: 1.5
+      voxel_leaf_size: 0.2
+      loop_detection_period: 3000
+      # Opt-in (v0.4 D1). false = query only the latest submap per timer tick
+      # (historical wall-clock-driven behaviour). true = deterministically catch
+      # up over every un-queried submap so the loop-search query set no longer
+      # depends on timer batching. Default off; flip to true only after the
+      # 8-vs-16 reproducibility validation.
+      deterministic_loop_scheduling: false
+      threshold_loop_closure_score: 1.5
+      scan_context_loop_closure_score_threshold: -1.0
+      # Relaxed fitness ceiling for TRIANGLE_DESCRIPTOR candidates with strong
+      # RANSAC inlier evidence (mirrors scan_context_loop_closure_score_threshold
+      # above). -1.0 = disabled (fall back to threshold_loop_closure_score).
+      # Triangle inliers are the correctness signal; NDT/GICP fitness is an
+      # overlap signal -- a thin-overlap reverse-direction revisit can have
+      # strong inliers and poor fitness purely from one-sided sensing. Fitness
+      # still scales loop_edge_info_weight downstream, so relaxing this never
+      # bypasses that weighting, only the accept/reject gate.
+      triangle_loop_closure_score_threshold: -1.0
+      # Guardrail: the relaxed threshold above only applies when a candidate's
+      # inlier evidence clears these (independent of, and typically stricter
+      # than, triangle_descriptor_min_inliers / min_inlier_ratio below).
+      # -1 / -1.0 = no extra bar beyond that base RANSAC gate.
+      triangle_relaxed_fitness_min_inliers: -1
+      triangle_relaxed_fitness_min_inlier_ratio: -1.0
+      distance_loop_closure: 30.0
+      range_of_searching_loop_closure: 20.0
+      search_submap_num: 3
+      max_loop_candidate_count: 3
+      loop_edge_dedup_index_window: 8
+      loop_max_translation_delta: 15.0
+      loop_max_rotation_delta_deg: 45.0
+      # Per-source caps for descriptor-based candidates (TRIANGLE,
+      # SCAN_CONTEXT, BEV, SOLID). -1 = disabled, fall back to the
+      # generic caps above. Set to a larger value when the descriptor
+      # has been validated as precise on the target dataset and large
+      # NDT corrections are expected (e.g. long-baseline loops on a
+      # drifting trajectory).
+      loop_max_translation_delta_descriptor: -1.0
+      loop_max_rotation_delta_deg_descriptor: -1.0
+      use_gnss: false
+      gnss_topic: "/gnss/fix"
+      gnss_info_weight: 1.0
+      gnss_use_covariance_weighting: true
+      gnss_covariance_min_variance_m2: 0.01
+      gnss_covariance_max_variance_m2: 25.0
+      gnss_rtk_fix_max_horizontal_stddev_m: 0.3
+      gnss_rtk_fix_weight_scale: 3.0
+      gnss_non_rtk_weight_scale: 1.0
+      gnss_max_horizontal_residual_m: 10.0
+      use_scan_context: false
+      scan_context_threshold: 0.3
+      use_bev_descriptor: false
+      bev_descriptor_threshold: 0.20
+      bev_descriptor_grid_size_m: 80.0
+      bev_descriptor_grid_cells: 40
+      bev_descriptor_yaw_bins: 24
+      bev_descriptor_sequence_window: 0
+      bev_descriptor_sequence_threshold: -1.0
+      bev_descriptor_pose_consistency_threshold_m: -1.0
+      bev_descriptor_max_euclidean_distance_m: -1.0
+      bev_descriptor_rerank_weight_m: 100.0
+      use_solid_descriptor: false
+      solid_descriptor_min_similarity: 0.70
+      solid_descriptor_sequence_window: 0
+      solid_descriptor_sequence_min_similarity: -1.0
+      solid_descriptor_pose_consistency_threshold_m: -1.0
+      solid_descriptor_max_euclidean_distance_m: -1.0
+      # STD/BTC-style triangle descriptor place recognition. Defaults sized
+      # for a 360° LiDAR; tighten the edge and grid bounds for short-range
+      # sensors like the Livox MID-360.
+      use_triangle_descriptor: false
+      # Keypoint mode. "bev_max_height" picks BEV local-max cells (works on
+      # spinning 360° LiDAR outdoors). "edge_3d" runs PCA on radius-r
+      # neighborhoods and keeps high-edgeness (column edge / wall corner)
+      # supports - prefer this for narrow-FOV LiDAR (Livox MID-360) and
+      # indoor scenes where BEV max-height repeatability collapses.
+      # "surface_saliency" detrends a robust ground-plane fit out of the BEV
+      # grid and picks curvature extrema (crater rims, curbs, boulders) -
+      # prefer this for open/sloped terrain (parking lots, hills) where
+      # neither bev_max_height (no vertical prominence) nor edge_3d (no edge
+      # response) finds enough keypoints.
+      triangle_descriptor_keypoint_mode: "bev_max_height"
+      triangle_descriptor_grid_size_m: 60.0
+      triangle_descriptor_grid_cells: 100
+      triangle_descriptor_max_keypoints: 40
+      triangle_descriptor_min_salience_m: 0.8
+      # edge_3d-mode tuning. Smaller voxel + smaller neighbor radius =
+      # finer keypoints but more compute. The default 0.4 / 1.0 m pair
+      # is the starting point used in 2026-05-19 MID-360 ablation.
+      triangle_descriptor_edge_voxel_size_m: 0.4
+      triangle_descriptor_edge_neighbor_radius_m: 1.0
+      triangle_descriptor_edge_min_neighbors: 6
+      triangle_descriptor_edge_min_edgeness: 0.5
+      triangle_descriptor_edge_nms_radius_m: 2.0
+      # surface_saliency-mode tuning. plane_fit_percentile is the lower
+      # height-percentile of populated cells used to fit the ground plane;
+      # curvature_radius_cells is the neighborhood for the curvature
+      # response; min_saliency_percentile is a soft floor (0 = off, i.e.
+      # pure top-N rank selects the keypoints - the anti-starvation default).
+      triangle_descriptor_surface_plane_fit_percentile: 0.3
+      triangle_descriptor_surface_curvature_radius_cells: 1
+      triangle_descriptor_surface_min_saliency_percentile: 0.0
+      triangle_descriptor_min_edge_m: 2.0
+      triangle_descriptor_max_edge_m: 50.0
+      triangle_descriptor_max_triangles: 3000
+      triangle_descriptor_edge_bin_m: 0.5
+      # Quad-hash extension: when > 0, the bucket key gains a 4th dim:
+      # quantized distance from the triangle centroid to the nearest
+      # non-vertex keypoint (rotation-invariant local context). Defaults
+      # to 0 so the legacy 3-edge hash is preserved bit-for-bit; flip per
+      # dataset when repeated geometry produces too many wrong-but-agreeing
+      # triangle pairs.
+      triangle_descriptor_quad_feature_bin_m: 0.0
+      triangle_descriptor_min_votes: 6
+      triangle_descriptor_min_inliers: 4
+      # Verify the top-K vote-getters (each in its own scoped single-submap
+      # database) and pick the winner by inlier_ratio instead of trusting
+      # top-1-by-votes. K=1 reproduces the legacy behaviour bit-for-bit;
+      # raise for permissive keypoint modes (surface_saliency) where hash
+      # collisions make the top-voted submap unreliable on its own.
+      triangle_descriptor_verify_top_k: 1
+      # Precision floor recipe: combine triangle_descriptor_min_inliers
+      # (absolute) AND triangle_descriptor_min_inlier_ratio (relative).
+      # Both must pass for an emit -> stricter when max_pairs is high.
+      # 0.0 disables the relative gate. Useful values:
+      #   max_pairs=64, min_inlier_ratio=0.10  -> at least 7 inliers
+      #   max_pairs=32, min_inlier_ratio=0.15  -> at least 5 inliers
+      # The component logs "inliers=N eval_n=M inlier_ratio=R" on every
+      # emit AND on every rejection (when debug_flag is on) so tuning is
+      # observable without re-running.
+      triangle_descriptor_min_inlier_ratio: 0.0
+      triangle_descriptor_max_pairs: 64
+      # 4-point consensus: project non-triangle query keypoints by the
+      # winning SE(3) and require >= N to land within fourth_point_max_distance_m
+      # of any database keypoint in the chosen submap. 0 disables.
+      triangle_descriptor_min_4th_point_agreements: 0
+      triangle_descriptor_fourth_point_max_distance_m: 2.0
+      # After 3-point RANSAC picks the winning SE(3), optionally pool every
+      # inlier triangle's 3 point correspondences and refine the SE(3) via a
+      # single N-point Umeyama. Reduces translation noise by √N versus keeping
+      # the single 3-point hypothesis - important indoor / narrow-FOV where
+      # the initial-pose accuracy gates NDT refinement.
+      triangle_descriptor_refine_se3_with_all_inliers: false
+      triangle_descriptor_inlier_translation_m: 2.0
+      triangle_descriptor_inlier_rotation_deg: 5.0
+      triangle_descriptor_exclude_recent: 4
+      # Optional: gate triangle candidates by BEV mutual-visibility distance
+      # to suppress false positives from repeated geometry. Requires
+      # use_bev_descriptor: true to have any effect.
+      triangle_verify_with_bev: false
+      triangle_verify_bev_max_distance: 0.30
+      prefer_scan_context_candidates: false
+      use_3d_bbs_for_scan_context: false
+      three_d_bbs_min_level_res: 1.0
+      three_d_bbs_max_level: 2
+      three_d_bbs_score_threshold_percentage: 0.25
+      three_d_bbs_timeout_msec: 250
+      three_d_bbs_num_threads: 1
+      three_d_bbs_voxel_leaf_size: 2.0
+      three_d_bbs_source_submap_num: 2
+      three_d_bbs_target_submap_radius: 1
+      three_d_bbs_translation_search_margin_m: 7.5
+      three_d_bbs_roll_pitch_search_deg: 5.0
+      three_d_bbs_yaw_search_deg: 90.0
+      use_dynamic_object_filter: false
+      dynamic_object_filter_voxel_size: 0.3
+      dynamic_object_filter_min_observations: 2
+      dynamic_object_filter_temporal_window: 5
+      dynamic_object_filter_max_range_from_sensor_m: 30.0
+      debug_flag: false

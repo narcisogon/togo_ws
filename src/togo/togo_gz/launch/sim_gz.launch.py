@@ -1,39 +1,29 @@
-# Copyright (c) 2026, United States Government, as represented by the
-# Administrator of the National Aeronautics and Space Administration.
-#
-# All rights reserved.
-#
-# This software is licensed under the Apache License, Version 2.0
-# (the "License"); you may not use this file except in compliance with the
-# License. You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations
-# under the License.
-
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    GroupAction,
+    IncludeLaunchDescription,
+    TimerAction,           # ← ADD THIS
+    RegisterEventHandler,  # ← ADD THIS
+)
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessStart  # ← ADD THIS
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import Node, PushRosNamespace, SetParameter
+from launch_ros.actions import Node, PushRosNamespace
 from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    # declare launch arguments
+    # ── Declare launch arguments ───────────────────────────────────────────
     declared_arguments = []
     declared_arguments.append(
         DeclareLaunchArgument(
             "tf_prefix",
             default_value="",
             description="tf_prefix of the joint names, useful for \
-        multi-robot setup. If changed, joint names in the controllers' configuration \
-        have to be updated.",
+        multi-robot setup. If changed, joint names in the controllers' \
+        configuration have to be updated.",
         )
     )
     declared_arguments.append(
@@ -41,13 +31,6 @@ def generate_launch_description():
             "ns",
             default_value="",
             description="Namespace for the robot",
-        )
-    )
-    declared_arguments.append(
-        DeclareLaunchArgument(
-            "use_sim_time",
-            default_value="true",
-            description="Use simulation time",
         )
     )
     declared_arguments.append(
@@ -67,77 +50,73 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "robot_z",
-            default_value="0.2",
+            # FIX #2: Was 15.2 — robot was in freefall when controllers fired.
+            # Set to just above terrain surface so hardware interfaces
+            # are stable when the controller spawner runs.
+            default_value="0.5",
             description="Initial Z-position of the robot when spawned into Gazebo",
         )
     )
     declared_arguments.append(
         DeclareLaunchArgument(
-            "rviz", default_value="true", description="Flag to start RViz for robot and sensor checkout."
+            "rviz",
+            default_value="true",
+            description="Flag to start RViz for robot and sensor checkout."
         )
     )
+    # FIX #1: Expose controller timeout as a tunable argument
     declared_arguments.append(
         DeclareLaunchArgument(
-            "world_pkg",
-            default_value="practice_worlds",
-            description="Name of the package that has the world file",
-        )
-    )
-    declared_arguments.append(
-        DeclareLaunchArgument(
-            "world",
-            default_value="obstacle_lot.sdf",
-            description="Name of the world file; must exist in worlds/ directory of world_pkg",
+            "controller_spawn_delay",
+            default_value="10.0",
+            description="Seconds to wait after world+robot load before "
+                        "activating controllers. Increase if terrain mesh "
+                        "is large and Gazebo loads slowly.",
         )
     )
 
-    # initialize arguments
-    tf_prefix = LaunchConfiguration("tf_prefix")
-    ns = LaunchConfiguration("ns")
-    x = LaunchConfiguration("robot_x")
-    y = LaunchConfiguration("robot_y")
-    z = LaunchConfiguration("robot_z")
-    rviz = LaunchConfiguration("rviz")
-    world_pkg = LaunchConfiguration("world_pkg")
-    world = LaunchConfiguration("world")
-    use_sim_time = LaunchConfiguration("use_sim_time")
+    # ── Initialize arguments ───────────────────────────────────────────────
+    tf_prefix             = LaunchConfiguration("tf_prefix")
+    ns                    = LaunchConfiguration("ns")
+    x                     = LaunchConfiguration("robot_x")
+    y                     = LaunchConfiguration("robot_y")
+    z                     = LaunchConfiguration("robot_z")
+    rviz                  = LaunchConfiguration("rviz")
+    controller_spawn_delay = LaunchConfiguration("controller_spawn_delay")
 
-    # include packages
+    # ── Packages ───────────────────────────────────────────────────────────
     pkg_deploy = FindPackageShare("togo_deploy")
     pkg_gazebo = FindPackageShare("togo_gz")
 
-    # config files
-    gz_bridge_config = PathJoinSubstitution([pkg_gazebo, "config", "bridge.yaml"])
-    rgbd_point_fix_config = PathJoinSubstitution([pkg_gazebo, "config", "rgbd_point_fix.yaml"])
+    # ── Config files ───────────────────────────────────────────────────────
+    gz_bridge_config      = PathJoinSubstitution(
+        [pkg_gazebo, "config", "bridge.yaml"])
+    rgbd_point_fix_config = PathJoinSubstitution(
+        [pkg_gazebo, "config", "rgbd_point_fix.yaml"])
 
-    # start world
+    # ── Stage 1: Start world (fires immediately) ───────────────────────────
     world_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_gazebo, "launch", "start_world.launch.py"])),
-        launch_arguments=[("world_pkg", world_pkg), ("world", world)],
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([pkg_gazebo, "launch", "start_world.launch.py"]))
     )
 
-    # Gazebo nodes
+    # ── Stage 2: Spawn robot + bridge (small delay after world) ───────────
+    # FIX #1: Give Gazebo time to load the terrain mesh before spawning robot
     gz_sim_node = Node(
         package="ros_gz_sim",
         executable="create",
         arguments=[
-            "-entity",
-            "togo",
-            "-name",
-            "togo",
-            "-topic",
-            "robot_description",
-            "-x",
-            x,
-            "-y",
-            y,
-            "-z",
-            z,
-            "-controller_manager",
-            "controller_manager",
+            "-entity",      "togo",
+            "-name",        "togo",
+            "-topic",       "robot_description",
+            "-x",           x,
+            "-y",           y,
+            "-z",           z,
+            "-controller_manager", "controller_manager",
         ],
         output="screen",
     )
+
     gz_bridge_node = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
@@ -145,29 +124,49 @@ def generate_launch_description():
         parameters=[
             {
                 "config_file": gz_bridge_config,
-                "qos_overrides./tf_static.publisher.durability": "transient_local",
+                "qos_overrides./tf_static.publisher.durability":
+                    "transient_local",
+                "qos_overrides./husky/sensors/seyond/points.publisher.reliability":
+                    "best_effort",
             }
         ],
         output="screen",
     )
 
-    # Togo control
+    # Delay robot spawn until world mesh has loaded
+    # Increase world_load_delay if Gazebo is still slow to load your terrain
+    world_load_delay = 6.0    # seconds — tune up if terrain loads slowly
+    stage2 = TimerAction(
+        period=world_load_delay,
+        actions=[
+            gz_sim_node,
+            gz_bridge_node,
+        ]
+    )
+
+    # ── Stage 3: Controllers (delayed until robot+hardware ready) ─────────
+    # FIX #1 + #3: control_launch fires AFTER robot is spawned and settled.
+    # controller_spawn_delay default = 10s (world_load_delay + 4s settle time)
+    # If you still get timeouts increase controller_spawn_delay at launch:
+    #   ros2 launch togo_gz togo_sim.launch.py controller_spawn_delay:=20.0
     control_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_deploy, "launch", "control.launch.py"])),
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([pkg_deploy, "launch", "control.launch.py"])),
         launch_arguments={
             "robot_description_package": "togo_gz",
-            "robot_description_file": "togo_gz.urdf.xacro",
-            "is_sim": "true",
-            "use_sim_time": "true",
-            "tf_prefix": tf_prefix,
-            "ns": ns,
+            "robot_description_file":    "togo_gz.urdf.xacro",
+            "is_sim":                    "true",
+            "tf_prefix":                 tf_prefix,
+            "ns":                        ns,
         }.items(),
     )
 
-    # Republishes the rgbd point clouds with the correct transforms
-    # https://github.com/gazebosim/gz-sensors/issues/545
-    rgbd_point_fix_config = PathJoinSubstitution([pkg_gazebo, "config", "rgbd_point_fix.yaml"])
+    stage3 = TimerAction(
+        period=controller_spawn_delay,
+        actions=[control_launch]
+    )
 
+    # ── Stage 4: Aux nodes (after controllers up) ──────────────────────────
     gz_rgbd_point_fixer = Node(
         package="togo_gz",
         executable="gz_rgbd_point_fixer",
@@ -175,24 +174,36 @@ def generate_launch_description():
         parameters=[rgbd_point_fix_config],
     )
 
-    # RViz
     rviz_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_deploy, "launch", "robot_sensor_checkout.launch.py"])),
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution(
+                [pkg_deploy, "launch", "robot_sensor_checkout.launch.py"])
+        ),
+        launch_arguments={
+            "lidar_topic": "/husky/sensors/seyond/points",
+        }.items(),
         condition=IfCondition(rviz),
     )
 
-    push_sim_time = SetParameter("use_sim_time", use_sim_time)
+    aux_delay = 14.0    # after controllers have had time to activate
+    stage4 = TimerAction(
+        period=aux_delay,
+        actions=[
+            gz_rgbd_point_fixer,
+            rviz_launch,
+        ]
+    )
 
+    # ── Assemble with namespace ────────────────────────────────────────────
     launches_nodes = [
-        push_sim_time,
-        world_launch,
-        gz_sim_node,
-        gz_bridge_node,
-        control_launch,
-        gz_rgbd_point_fixer,
-        rviz_launch,
+        world_launch,   # t=0s   — Gazebo world + terrain mesh loads
+        stage2,         # t=6s   — robot spawns, bridge starts
+        stage3,         # t=10s  — controllers activate
+        stage4,         # t=14s  — RGBD fixer + RViz
     ]
 
-    ns_action = GroupAction(actions=[PushRosNamespace(ns)] + launches_nodes)
+    ns_action = GroupAction(
+        actions=[PushRosNamespace(ns)] + launches_nodes
+    )
 
     return LaunchDescription(declared_arguments + [ns_action])

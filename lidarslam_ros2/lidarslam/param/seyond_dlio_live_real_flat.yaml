@@ -1,0 +1,360 @@
+# seyond_dlio_live_real_flat.yaml
+#
+# Single parameter file for the flat live-real Husky/Seyond DLIO + graph SLAM
+# stack (seyond_dlio_live_real_flat.launch.py).
+#
+# Derived from seyond_dlio_graph.yaml (simulation baseline) with the following
+# systematic changes:
+#   - use_sim_time: false everywhere
+#   - Frames updated to real Husky TF tree
+#   - Extrinsics from measured rover TF
+#   - Gravity 9.80665 (Earth, not the sim world value 9.81)
+#   - syntheticTiming disabled (/iv_points carries native FLOAT64 timestamps)
+#   - scanPeriodSec 0.1 (10 Hz Seyond hardware scan rate)
+#   - cropBoxFilter/size 0.5 (1.0 caused z-drift on this rover)
+#   - debug/printPeriod 0.0 (keep terminal usable on rover)
+#   - diagnostics history file updated to live path
+#   - map/dem output dirs updated to rover paths
+#   - reference_path_publisher section removed (no Gazebo on rover)
+
+# ============================================================
+# DLIO odometry frontend
+# ============================================================
+dlio_odom_node:
+  ros__parameters:
+    use_sim_time: false
+
+    # Real Husky TF frame IDs.
+    frames/odom:     odom
+    frames/baselink: base_link
+    frames/lidar:    lidar3d_0_laser
+    frames/imu:      imu_0_link
+    odom/odom_frame: odom
+    adaptive: false
+
+    # /iv_points carries native absolute FLOAT64 `timestamp` values.
+    # Synthetic column timing must remain disabled on real hardware.
+    pointcloud/deskew: false
+    pointcloud/syntheticTiming/enabled:        false
+    pointcloud/syntheticTiming/scanPeriodSec:  0.1
+    pointcloud/syntheticTiming/reverseColumns: false
+    # Cap deskew interpolation buckets. The scan still uses per-point timing
+    # but preprocessing no longer needs one IMU pose per timestamp group.
+    pointcloud/deskew/maxUniqueTimestamps: 96
+    pointcloud/voxelize: true
+    map/waitUntilMove: false
+    map/dense/filtered: false
+    map/sparse/leafSize: 0.15
+    # 0.5 m removes the complete [-0.5, +0.5] m cube around the sensor.
+    # 1.0 m discarded useful nearby ground on this rover and caused z-drift.
+    odom/preprocessing/cropBoxFilter/size: 0.5
+    odom/preprocessing/voxelFilter/res: 0.15
+    # Keep DLIO's built-in full Path quiet. The launch creates the lighter
+    # /dlio/path_simple visualization from /dlio/odometry instead.
+    odom/path/publish: false
+    odom/path/publishEveryN: 5
+    odom/path/maxPoses: 2000
+    odom/path/minDistance: 0.05
+
+    # IMU startup calibration.
+    # Hold the rover stationary for the first 3 s so gyro/accel/gravity
+    # calibration sees a genuinely static sample.
+    imu/calibration: true
+    odom/imu/calibration/gyro:  true
+    odom/imu/calibration/accel: true
+    odom/imu/calibration/time:  3.0
+    odom/imu/approximateGravity: true
+    odom/imu/bufferSize: 5000
+    # Standard Earth gravity. The sim used 9.81 to match its world SDF;
+    # real hardware uses the correct constant.
+    odom/gravity: 9.80665
+    odom/computeTimeOffset: false
+    diagnostics/imuWaitTimeoutMs: 5000.0
+
+    # Gated ground-plane z-constraint.
+    # Strictly additive; enabled: false is bit-identical to prior behavior.
+    # Enable only after flat-terrain runs are confirmed.
+    odom/groundConstraint/enabled:               false
+    odom/groundConstraint/maxRange:              8.0
+    odom/groundConstraint/zBandBelow:            0.9
+    odom/groundConstraint/zBandAbove:            0.25
+    odom/groundConstraint/baselinkHeight:        0.30
+    odom/groundConstraint/ransacIterations:      50
+    odom/groundConstraint/ransacInlierDist:      0.05
+    odom/groundConstraint/minInliers:            150
+    odom/groundConstraint/minInlierRatio:        0.60
+    odom/groundConstraint/maxNormalTiltDeg:      10.0
+    odom/groundConstraint/maxHeightJump:         0.15
+    odom/groundConstraint/heightFilterAlpha:     0.00
+    odom/groundConstraint/Kz:                    2.0
+    odom/groundConstraint/correctRollPitch:      false
+    odom/groundConstraint/Krp:                   0.5
+    odom/groundConstraint/maxCorrectionPerScan:  0.02
+    odom/groundConstraint/heightJumpRecoverScans: 15
+
+    # Measured Husky extrinsics (from the rover TF tree).
+    extrinsics/baselink2lidar/t: [0.400, 0.000, 0.313]
+    extrinsics/baselink2lidar/R: [1.0, 0.0, 0.0,
+                                  0.0, 1.0, 0.0,
+                                  0.0, 0.0, 1.0]
+    extrinsics/baselink2imu/t:   [0.059, 0.000, 0.161275]
+    extrinsics/baselink2imu/R:   [1.0, 0.0, 0.0,
+                                  0.0, 1.0, 0.0,
+                                  0.0, 0.0, 1.0]
+
+    # Keyframes / submap.
+    odom/keyframe/threshD:    0.4
+    odom/keyframe/threshR:    8.0
+    odom/submap/keyframe/knn: 14
+    odom/submap/keyframe/kcv: 14
+    odom/submap/keyframe/kcc: 14
+
+    # DLIO scan-to-map GICP.
+    odom/gicp/minNumPoints:              64
+    odom/gicp/kCorrespondences:          16
+    odom/gicp/maxCorrespondenceDistance: 1.0
+    odom/gicp/maxIterations:             32
+    odom/gicp/transformationEpsilon:     0.005
+    odom/gicp/rotationEpsilon:           0.005
+    odom/gicp/initLambdaFactor:          1e-9
+    odom/gicp/regularizationMethod:      PLANE
+
+    # Soft gates for featureless / high-yaw-rate moments.
+    odom/gicp/rejectBadCorrections:            false
+    odom/gicp/spinProtection/enabled:          false
+    odom/gicp/timingProtection/enabled:        false
+    odom/gicp/timingProtection/dropStaleScans: false
+    odom/gicp/freezeOnBadCorrection:           false
+
+    odom/gicp/maxCorrectionTranslation:                   0.35
+    odom/gicp/maxCorrectionRotationDeg:                   18.0
+    odom/gicp/spinProtection/angularRate:                 0.90
+    odom/gicp/spinProtection/maxCorrectionTranslation:    0.1
+    odom/gicp/spinProtection/recoveryTranslationStep:     0.006
+    odom/gicp/spinProtection/recoveryRotationStepDeg:     6.0
+    odom/gicp/spinProtection/useImuPriorOnReject:         false
+    odom/gicp/timingProtection/imuAgeMs:                  140.0
+    odom/gicp/timingProtection/maxCorrectionTranslation:  0.10
+    odom/gicp/timingProtection/maxCorrectionRotationDeg:  10.0
+    odom/gicp/timingProtection/recoveryTranslationStep:   0.008
+    odom/gicp/timingProtection/recoveryRotationStepDeg:   2.0
+    odom/gicp/timingProtection/dropImuAgeMs:              220.0
+    odom/gicp/timingProtection/dropRejectStreak:          0
+    odom/gicp/timingProtection/maxIterations:             42
+    odom/gicp/adaptiveIterations/enabled:                 false
+    odom/gicp/adaptiveIterations/weakOverlap:             0.35
+    odom/gicp/adaptiveIterations/weakHessianCondition:    100000.0
+    odom/gicp/adaptiveIterations/slowSolveMs:             25.0
+    odom/gicp/adaptiveIterations/weakMaxIterations:       10
+    odom/gicp/solveTimeBudget/enabled:                    false
+    odom/gicp/solveTimeBudget/maxMs:                      25.0
+    odom/gicp/solveTimeBudget/partialScale:               0.15
+    odom/gicp/badCorrectionFreezeStreak:                  3
+    odom/gicp/badCorrectionRecoveryTranslationStep:       0.04
+    odom/gicp/badCorrectionRecoveryRotationStepDeg:       3.0
+    # When a scan match is rejected and freezeOnBadCorrection is false,
+    # use the IMU prior only as a short bridge. Long reject streaks get
+    # velocity damping so the frontend does not run away on IMU-only dead
+    # reckoning.
+    odom/gicp/badCorrectionMaxLinearSpeed:      0.9
+    odom/gicp/badCorrectionVelocityDecay:       0.92
+    odom/gicp/badCorrectionVelocityDecayStreak: 8
+    odom/gicp/badCorrectionHoldStreak:          0
+    odom/imuBridge/clamp/enabled:               false
+    odom/imuBridge/clamp/maxTranslation:        0.08
+    odom/imuBridge/clamp/maxRotationDeg:        5.0
+
+    odom/gicp/quality/usePartialDegenerate:   false
+    odom/gicp/quality/minOverlap:             0.50
+    odom/gicp/quality/degenerateMinOverlap:   0.25
+    odom/gicp/quality/maxFitness:             5.0
+    odom/gicp/quality/degenerateMaxFitness:   25.0
+    odom/gicp/quality/minHessianEigen:        1.0e-6
+    odom/gicp/quality/maxHessianCondition:    1.0e8
+    odom/gicp/quality/partialCorrectionScale: 0.20
+    odom/gicp/quality/partialMaxTranslation:  1.5
+    odom/gicp/quality/partialMaxRotationDeg:  45.0
+
+    # Local tracking-map protection.
+    odom/keyframe/trustRegistration:         false
+    odom/keyframe/trust/minOverlap:          0.78
+    odom/keyframe/trust/maxFitness:          1.2
+    odom/keyframe/trust/maxHessianCondition: 30000.0
+    odom/keyframe/trust/maxSolveTimeMs:      75.0
+    odom/keyframe/trust/minInliers:          850
+    odom/keyframe/trust/allowPartial:        false
+
+    odom/gicp/innovationGate/enabled:        false
+    odom/gicp/innovationGate/partialScale:   0.20
+    odom/gicp/innovationGate/maxTranslation: 0.08
+    odom/gicp/innovationGate/maxYawDeg:      8.0
+
+    odom/gicp/degeneracyProjection/enabled:   false
+    odom/gicp/degeneracyProjection/condition: 30000.0
+    odom/gicp/degeneracyProjection/minScale:  0.10
+
+    odom/gicp/recovery/enabled:                   false
+    odom/gicp/recovery/rejectStreak:              5
+    odom/gicp/recovery/maxCorrespondenceDistance: 2.0
+    odom/gicp/recovery/maxIterations:             16
+    odom/gicp/recovery/acceptTranslation:         2.0
+    odom/gicp/recovery/acceptRotationDeg:         25.0
+    odom/gicp/recovery/minOverlap:                0.45
+    odom/gicp/recovery/maxFitness:                3.0
+    odom/gicp/recovery/attemptSpacing:            6
+    odom/gicp/recovery/skipWhenTimingActive:      false
+    odom/gicp/recovery/timeBudgetMs:              60.0
+    odom/gicp/recovery/yawOffsetsDeg:             [0.0, -8.0, 8.0]
+    odom/gicp/recovery/ndt/enabled:               false
+    odom/gicp/recovery/ndt/resolution:            1.0
+    odom/gicp/recovery/ndt/stepSize:              0.1
+    odom/gicp/recovery/ndt/transformationEpsilon: 0.01
+    odom/gicp/recovery/ndt/maxIterations:         10
+
+    # Keep the terminal usable on the rover. Diagnostics still publish on
+    # /dlio/frontend_diagnostics and are retained in the history file.
+    debug/printPeriod:       0.0
+    diagnostics/historySize: 80
+    diagnostics/historyFile: /tmp/dlio_live_diagnostic_history.log
+
+# ============================================================
+# DLIO map node
+# ============================================================
+dlio_map_node:
+  ros__parameters:
+    use_sim_time: false
+    odom/odom_frame:     odom
+    map/sparse/leafSize: 0.25
+
+# ============================================================
+# Graph SLAM backend
+# ============================================================
+graph_based_slam:
+  ros__parameters:
+    use_sim_time: false
+    use_odom_input: true
+    global_frame_id: map
+    odom_frame_id:   odom
+    publish_map_to_odom_tf: true
+    publish_modified_map_array_on_append: false
+    map_to_odom_tf_future_offset_sec: 0.55
+    optimizer_backend: gtsam_isam2
+
+    # Maximum-silence heartbeat for cached map/TF outputs.
+    modified_map_publish_period_sec: 0.30
+
+    publish_modified_map:   false
+    modified_map_leaf_size: 0.15
+
+    # Debug/visualization cloud with per-point time and submap_index fields.
+    publish_modified_map_timed:   false
+    modified_map_timed_leaf_size: 0.10
+
+    # Live outputs are deliberately separate from replay and simulation.
+    map_save_dir:   /home/er4-user/slam_ws/src/lidarslam_ros2/output/husky_seyond_live_real
+    dem/output_dir: /home/er4-user/slam_ws/src/lidarslam_ros2/output/husky_seyond_live_real/lunar_dem
+
+
+    dem/enabled:                               false
+    dem/update_period_sec:                     5.0
+    dem/storage_resolution_m:                  0.20
+    dem/preview_resolution_m:                  0.30
+    dem/min_points_per_cell:                   1
+    dem/terrain_percentile:                    0.25
+    dem/interpolation/max_component_cells:     4
+    dem/interpolation/search_radius_cells:         2
+    dem/interpolation/min_valid_neighbors:         6
+    dem/interpolation/max_neighbor_height_range_m: 0.10
+    dem/interpolation/max_plane_residual_m:        0.03
+    dem/publish_preview:                           true
+    dem/preview_max_cells:                         250000
+    dem/max_raster_cells:                          4000000
+
+    # Backend cloud registration for loop closures / constraints.
+    registration_method: NDT
+    ndt_resolution:      5.0
+    ndt_num_threads:     0
+    voxel_leaf_size:     0.2
+
+    # Loop closure and graph constraints.
+    loop_detection_period:                     1000
+    deterministic_loop_scheduling:             false
+    threshold_loop_closure_score:              15.0
+    scan_context_loop_closure_score_threshold: 1.5
+    triangle_loop_closure_score_threshold:     3.5
+    triangle_relaxed_fitness_min_inliers:      8
+    triangle_relaxed_fitness_min_inlier_ratio: 0.10
+    use_distance_loop_candidates:              false
+    distance_loop_closure:                     15.0
+    range_of_searching_loop_closure:           50.0
+
+    search_submap_num:             8
+    submap_distance_threshold:     0.3
+    num_adjacent_pose_cnstraints:  5
+    max_loop_candidate_count:      3
+    loop_edge_dedup_index_window:  20
+    loop_max_translation_delta:    15.0
+    loop_max_rotation_delta_deg:   45.0
+    loop_max_translation_delta_descriptor:  4.0
+    loop_max_rotation_delta_deg_descriptor: 20.0
+    loop_z_preshift_enabled:       true
+    loop_z_preshift_max_m:         5.0
+    adjacent_edge_info_weight:         1000.0
+    adjacent_edge_info_weight_z_scale: 0.3
+    loop_edge_info_weight:             200.0
+    loop_edge_robust_kernel_delta:     1.0
+
+    # Descriptors.
+    use_scan_context:               false
+    scan_context_threshold:         0.30
+    use_bev_descriptor:             false
+    use_solid_descriptor:           false
+    use_3d_bbs_for_scan_context:    false
+    prefer_scan_context_candidates: false
+
+    # Triangle descriptor loop closure, surface_saliency mode.
+    use_triangle_descriptor:                             false
+    triangle_descriptor_keypoint_mode:                   "surface_saliency"
+    triangle_descriptor_grid_size_m:                     60.0
+    triangle_descriptor_grid_cells:                      100
+    triangle_descriptor_max_keypoints:                   40
+    triangle_descriptor_min_salience_m:                  0.8
+    triangle_descriptor_surface_plane_fit_percentile:    0.3
+    triangle_descriptor_surface_curvature_radius_cells:  1
+    triangle_descriptor_surface_min_saliency_percentile: 0.0
+    triangle_descriptor_edge_voxel_size_m:               0.4
+    triangle_descriptor_edge_neighbor_radius_m:          1.0
+    triangle_descriptor_edge_min_neighbors:              6
+    triangle_descriptor_edge_min_edgeness:               0.5
+    triangle_descriptor_edge_nms_radius_m:               2.0
+    triangle_descriptor_min_edge_m:                      2.0
+    triangle_descriptor_max_edge_m:                      50.0
+    triangle_descriptor_max_triangles:                   3000
+    triangle_descriptor_edge_bin_m:                      0.5
+    triangle_descriptor_quad_feature_bin_m:              0.5
+    triangle_descriptor_verify_top_k:                    3
+    triangle_descriptor_min_votes:                       6
+    triangle_descriptor_min_inliers:                     4
+    triangle_descriptor_min_inlier_ratio:                0.08
+    triangle_descriptor_max_pairs:                       64
+    triangle_descriptor_min_4th_point_agreements:        0
+    triangle_descriptor_fourth_point_max_distance_m:     2.0
+    triangle_descriptor_refine_se3_with_all_inliers:     false
+    triangle_descriptor_inlier_translation_m:            2.0
+    triangle_descriptor_inlier_rotation_deg:             5.0
+    triangle_descriptor_exclude_recent:                  4
+    triangle_verify_with_bev:                            false
+    triangle_verify_bev_max_distance:                    0.30
+
+    use_dynamic_object_filter: false
+    use_pcd_cache:             true
+    # Explicit tmpfs guarantees RAM-backed per-submap PCD I/O regardless of
+    # container or filesystem config. The bash script supplies the actual
+    # per-run path via the graph_pcd_cache_dir launch argument, which
+    # overrides this default.
+    pcd_cache_dir:        /dev/shm/graph_slam_pcd_cache_live_real
+    use_save_map_in_loop: true
+    # Keep terminal concise on rover. Flip to true only when debugging
+    # graph internals.
+    debug_flag:                     false
+    odom_input_cloud_in_odom_frame: true

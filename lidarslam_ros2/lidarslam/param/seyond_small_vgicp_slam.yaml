@@ -1,0 +1,96 @@
+scan_matcher:
+  ros__parameters:
+    # Frames and live input mode.
+    use_sim_time: true
+    global_frame_id: "map"
+    robot_frame_id: "base_link"
+    odom_frame_id: "odom"
+
+    # Frontend registration. NDT is available in the current scanmatcher build.
+    registration_method: "NDT"
+    ndt_resolution: 2.0                  # NDT voxel resolution; larger is faster and smoother, smaller is sharper.
+    ndt_step_size: 0.1
+    ndt_num_threads: 4
+    ndt_transformation_epsilon: 0.01
+    ndt_max_iterations: 25
+    ndt_outlier_ratio: 0.55
+    gicp_corr_dist_threshold: 2.0        # Used only by GICP/FAST_GICP fallbacks.
+
+    # Cloud filtering and local map update.
+    vg_size_for_input: 0.35              # Input downsample leaf size.
+    vg_size_for_map: 0.25                # Stored submap/map leaf size.
+    trans_for_mapupdate: 0.05            # Add a new frontend submap after this much travel; low for live visibility/debug.
+    min_points_for_scan: 100
+    use_min_max_filter: true
+    scan_min_range: 0.2
+    scan_max_range: 80.0
+    scan_period: 0.1
+    map_publish_period: 2.0
+    num_targeted_cloud: 6                # Local target submaps; lower is faster.
+    num_recovery_targeted_cloud: 20
+    async_map_update: true
+
+    # Prediction/stability helpers.
+    set_initial_pose: true
+    initial_pose_x: 0.0
+    initial_pose_y: 0.0
+    initial_pose_z: 0.0
+    initial_pose_qx: 0.0
+    initial_pose_qy: 0.0
+    initial_pose_qz: 0.0
+    initial_pose_qw: 1.0
+    use_imu: true
+    imu_pose_prediction_enable: true
+    imu_pose_prediction_weight: 0.15
+    imu_z_prior_enable: true             # NDT-only gravity/yaw-stability prior.
+    imu_z_prior_weight: 0.05
+    use_odom: false
+    use_constant_velocity_model: true
+    adaptive_correspondence_threshold: true
+    adaptive_corr_dist_multiplier: 3.0
+
+    # Reject obvious frontend jumps.
+    max_acceptable_trans: 2.0
+    max_acceptable_angle: 45.0
+    recovery_max_acceptable_trans: 5.0
+    recovery_max_acceptable_angle: 90.0
+    debug_flag: true
+
+graph_based_slam:
+  ros__parameters:
+    use_sim_time: true
+    global_frame_id: map
+    map_save_dir: /ws/src/lidarslam_ros2/output/husky_seyond_small_vgicp_graph
+
+    # Backend loop/submap registration still uses NDT. This is separate from the frontend.
+    registration_method: "NDT"
+    ndt_resolution: 5.0
+    ndt_num_threads: 0
+    voxel_leaf_size: 0.2
+
+    loop_detection_period: 3000
+    threshold_loop_closure_score: 15.0
+    scan_context_loop_closure_score_threshold: -1.0
+    distance_loop_closure: 15.0
+    range_of_searching_loop_closure: 50.0
+    search_submap_num: 5
+    submap_distance_threshold: 0.1
+    num_adjacent_pose_cnstraints: 5
+
+    max_loop_candidate_count: 3
+    loop_edge_dedup_index_window: 20
+    loop_max_translation_delta: 15.0
+    loop_max_rotation_delta_deg: 45.0
+    adjacent_edge_info_weight: 1000.0
+    loop_edge_info_weight: 200.0
+    loop_edge_robust_kernel_delta: 1.0
+
+    use_scan_context: true
+    scan_context_threshold: 0.45
+    use_bev_descriptor: false
+    use_solid_descriptor: false
+    use_triangle_descriptor: false
+    use_dynamic_object_filter: false
+    use_pcd_cache: true
+    use_save_map_in_loop: true
+    debug_flag: true

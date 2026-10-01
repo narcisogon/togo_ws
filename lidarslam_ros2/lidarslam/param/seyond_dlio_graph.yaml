@@ -1,0 +1,374 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DLIO + Graph SLAM — Husky / seyond sim
+#
+# Sensor topics:
+#   LiDAR : /husky/sensors/seyond/points
+#   IMU   : /husky/sensors/imu_0/data_raw
+#
+# Extrinsics confirmed via tf2_echo:
+#   base_link -> lidar3d_0_laser : t=[0.400, 0.000, 0.313]
+#   base_link -> imu_0_link      : t=[0.059, 0.000, 0.161]
+# ─────────────────────────────────────────────────────────────────────────────
+
+dlio_odom_node:
+  ros__parameters:
+    use_sim_time: true
+
+    # ── Frames — husky sim TF tree ────────────────────────────────────────────
+    frames/odom:     odom
+    frames/baselink: base_link
+    frames/lidar:    lidar3d_0_laser
+    frames/imu:      imu_0_link
+    odom/odom_frame: odom
+    adaptive: false
+
+    pointcloud/syntheticTiming/enabled: false
+    pointcloud/syntheticTiming/scanPeriodSec: 0.0666666667
+    pointcloud/syntheticTiming/reverseColumns: false
+
+    # ── Frontend point processing ─────────────────────────────────────────────
+    pointcloud/deskew: true
+    pointcloud/deskew/maxUniqueTimestamps: 96
+    pointcloud/voxelize: true
+    map/waitUntilMove: false
+    map/dense/filtered: false
+    #map/sparse/leafSize: 0.10
+    odom/preprocessing/cropBoxFilter/size: 0.50
+    odom/preprocessing/voxelFilter/res: 0.15
+    # Suppress DLIO's internal unbounded path publisher.
+    # /dlio/path_simple is published by the external odom_to_path.py
+    # script with a proper max_poses cap.
+    odom/path/publish: false
+    odom/path/publishEveryN: 5
+    odom/path/maxPoses: 2000
+    odom/path/minDistance: 0.05
+    
+    # ── Keyframes / submap ────────────────────────────────────────────────────
+    odom/keyframe/threshD: 0.3    #Distance moved before saving a new keyframe
+    odom/keyframe/threshR: 6.0    #Angle rotated before saving a new keyframe
+    odom/submap/keyframe/knn: 14  #Spatially closest keyframes used for the submap
+    odom/submap/keyframe/kcv: 14   #Boundary keyframes used to maximize submap shape coverage
+    odom/submap/keyframe/kcc: 14   # Internal core keyframes used to fill the submap center
+
+    # ── DLIO scan-to-map GICP ─────────────────────────────────────────────────
+    odom/gicp/minNumPoints: 64            #Minimum points required in a scan to run the alignment
+    odom/gicp/kCorrespondences: 16        #Number of closest neighbor points checked to calculate local point shapes
+    odom/gicp/maxCorrespondenceDistance: 1.0     #Maximum distance allowed between two matching points across frames
+    odom/gicp/maxIterations: 46                  #Maximum alignment attempts allowed per frame before stopping
+    odom/gicp/transformationEpsilon: 0.005             #Position change threshold that stops alignment early if it settles
+    odom/gicp/rotationEpsilon: 0.005                   #Rotation change threshold that stops alignment early if it settles
+    odom/gicp/initLambdaFactor: 1.0e-9                 #Tiny numerical buffer added to prevent division-by-zero math error
+    odom/gicp/regularizationMethod: PLANE    # FROBENIUS,NORMALIZED_MIN_EIG, MIN_EIG, PLANE, NONE
+
+    # ── IMU setup ─────────────────────────────────────────────────────────────
+    imu/calibration: true
+    odom/imu/calibration/gyro: true
+    odom/imu/calibration/accel: true
+    odom/imu/calibration/time: 3.0
+    odom/imu/approximateGravity: true
+    odom/imu/bufferSize: 5000
+    # Must match lunar_surface.world. Temporarily set to Earth gravity for
+    # the terrain-traction A/B test.
+    odom/gravity: 9.82
+    odom/computeTimeOffset: false
+    
+   # ── Extrinsics: base_link -> lidar3d_0_laser ──────────────────────────────
+    # Source: ros2 run tf2_ros tf2_echo base_link lidar3d_0_laser
+    extrinsics/baselink2lidar/t: [0.400, 0.000, 0.313]
+    extrinsics/baselink2lidar/R: [1.000, 0.000, 0.000,
+                                  0.000, 1.000, 0.000,
+                                  0.000, 0.000, 1.000]
+
+    # ── Extrinsics: base_link -> imu_0_link ───────────────────────────────────
+    # Source: ros2 run tf2_ros tf2_echo base_link imu_0_link
+    extrinsics/baselink2imu/t: [0.059, 0.000, 0.161275]
+    extrinsics/baselink2imu/R: [1.000, 0.000, 0.000,
+                                0.000, 1.000, 0.000,
+                                0.000, 0.000, 1.000]
+
+    # ── Ground constraint (disabled — enable after verifying z-drift) ─────────
+    odom/groundConstraint/enabled: false
+    odom/groundConstraint/maxRange: 8.0
+    odom/groundConstraint/zBandBelow: 0.9
+    odom/groundConstraint/zBandAbove: 0.25
+    odom/groundConstraint/baselinkHeight: 0.30
+    odom/groundConstraint/ransacIterations: 50
+    odom/groundConstraint/ransacInlierDist: 0.05
+    odom/groundConstraint/minInliers: 150
+    odom/groundConstraint/minInlierRatio: 0.60
+    odom/groundConstraint/maxNormalTiltDeg: 10.0
+    odom/groundConstraint/maxHeightJump: 0.15
+    odom/groundConstraint/heightFilterAlpha: 0.00
+    odom/groundConstraint/Kz: 2.0
+    odom/groundConstraint/correctRollPitch: false
+    odom/groundConstraint/Krp: 0.5
+    odom/groundConstraint/maxCorrectionPerScan: 0.02
+    odom/groundConstraint/heightJumpRecoverScans: 15
+
+    # ── Correction guards ─────────────────────────────────────────────────────
+    odom/gicp/rejectBadCorrections: false
+    odom/gicp/spinProtection/enabled: false
+    odom/gicp/timingProtection/enabled: false
+    odom/gicp/timingProtection/dropStaleScans: false
+    odom/gicp/freezeOnBadCorrection: false
+
+    odom/gicp/maxCorrectionTranslation:                      0.55
+    odom/gicp/maxCorrectionRotationDeg:                      18.0
+    odom/gicp/spinProtection/angularRate:                    0.90
+    odom/gicp/spinProtection/maxCorrectionTranslation:       0.1
+    odom/gicp/spinProtection/recoveryTranslationStep:        0.006
+    odom/gicp/spinProtection/recoveryRotationStepDeg:        6.0
+    odom/gicp/spinProtection/useImuPriorOnReject:            true
+    odom/gicp/timingProtection/imuAgeMs:                     140.0
+    odom/gicp/timingProtection/maxCorrectionTranslation:     0.10
+    odom/gicp/timingProtection/maxCorrectionRotationDeg:     10.0
+    odom/gicp/timingProtection/recoveryTranslationStep:      0.008
+    odom/gicp/timingProtection/recoveryRotationStepDeg:      2.0
+    odom/gicp/timingProtection/dropImuAgeMs:                 220.0
+    odom/gicp/timingProtection/dropRejectStreak:             0
+    odom/gicp/timingProtection/maxIterations:                42
+
+    # ── Adaptive iterations ───────────────────────────────────────────────────
+    odom/gicp/adaptiveIterations/enabled:            false
+    odom/gicp/adaptiveIterations/weakOverlap:        0.35
+    odom/gicp/adaptiveIterations/weakHessianCondition: 100000.0
+    odom/gicp/adaptiveIterations/slowSolveMs:        25.0
+    odom/gicp/adaptiveIterations/weakMaxIterations:  10
+
+    # ── Solve time budget ─────────────────────────────────────────────────────
+    odom/gicp/solveTimeBudget/enabled:     false
+    odom/gicp/solveTimeBudget/maxMs:       25.0
+    odom/gicp/solveTimeBudget/partialScale: 0.15
+
+    # ── Bad correction handling ───────────────────────────────────────────────
+    odom/gicp/badCorrectionFreezeStreak:                     3
+    odom/gicp/badCorrectionRecoveryTranslationStep:          0.04
+    odom/gicp/badCorrectionRecoveryRotationStepDeg:          3.0
+    odom/gicp/badCorrectionMaxLinearSpeed:                   0.9
+    odom/gicp/badCorrectionVelocityDecay:                    0.92
+    odom/gicp/badCorrectionVelocityDecayStreak:              8
+    odom/gicp/badCorrectionHoldStreak:                       0
+
+    # ── IMU bridge clamp ──────────────────────────────────────────────────────
+    odom/imuBridge/clamp/enabled:        false
+    odom/imuBridge/clamp/maxTranslation: 0.08
+    odom/imuBridge/clamp/maxRotationDeg: 5.0
+
+    # ── Quality / degeneracy ──────────────────────────────────────────────────
+    odom/gicp/quality/usePartialDegenerate:   false
+    odom/gicp/quality/minOverlap:             0.50
+    odom/gicp/quality/degenerateMinOverlap:   0.25
+    odom/gicp/quality/maxFitness:             5.0
+    odom/gicp/quality/degenerateMaxFitness:   25.0
+    odom/gicp/quality/minHessianEigen:        1.0e-6
+    odom/gicp/quality/maxHessianCondition:    1.0e8
+    odom/gicp/quality/partialCorrectionScale: 0.20
+    odom/gicp/quality/partialMaxTranslation:  1.5
+    odom/gicp/quality/partialMaxRotationDeg:  45.0
+
+    # ── Keyframe trust ────────────────────────────────────────────────────────
+    odom/keyframe/trustRegistration:          false
+    odom/keyframe/trust/minOverlap:           0.78
+    odom/keyframe/trust/maxFitness:           1.2
+    odom/keyframe/trust/maxHessianCondition:  30000.0
+    odom/keyframe/trust/maxSolveTimeMs:       75.0
+    odom/keyframe/trust/minInliers:           850
+    odom/keyframe/trust/allowPartial:         false
+
+    # ── Innovation gate ───────────────────────────────────────────────────────
+    odom/gicp/innovationGate/enabled:        false
+    odom/gicp/innovationGate/partialScale:   0.20
+    odom/gicp/innovationGate/maxTranslation: 0.08
+    odom/gicp/innovationGate/maxYawDeg:      8.0
+
+    # ── Degeneracy projection ─────────────────────────────────────────────────
+    odom/gicp/degeneracyProjection/enabled:   false
+    odom/gicp/degeneracyProjection/condition: 30000.0
+    odom/gicp/degeneracyProjection/minScale:  0.10
+
+    # ── Recovery mode ─────────────────────────────────────────────────────────
+    odom/gicp/recovery/enabled:                   false
+    odom/gicp/recovery/rejectStreak:              5
+    odom/gicp/recovery/maxCorrespondenceDistance: 2.0
+    odom/gicp/recovery/maxIterations:             16
+    odom/gicp/recovery/acceptTranslation:         2.0
+    odom/gicp/recovery/acceptRotationDeg:         25.0
+    odom/gicp/recovery/minOverlap:                0.45
+    odom/gicp/recovery/maxFitness:                3.0
+    odom/gicp/recovery/attemptSpacing:            6
+    odom/gicp/recovery/skipWhenTimingActive:      true
+    odom/gicp/recovery/timeBudgetMs:              60.0
+    odom/gicp/recovery/yawOffsetsDeg:             [0.0, -8.0, 8.0]
+    odom/gicp/recovery/ndt/enabled:               false
+    odom/gicp/recovery/ndt/resolution:            1.0
+    odom/gicp/recovery/ndt/stepSize:              0.1
+    odom/gicp/recovery/ndt/transformationEpsilon: 0.01
+    odom/gicp/recovery/ndt/maxIterations:         10
+
+# ─────────────────────────────────────────────────────────────────────────────
+dlio_map_node:
+  ros__parameters:
+    use_sim_time:        true
+    odom/odom_frame:     odom
+    map/sparse/leafSize: 0.25
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# graph_based_slam — pose-graph backend (graphslam::GraphBasedSlamComponent)
+#
+# Consumes DLIO odometry + clouds, builds a pose graph (odometry-chain edges +
+# optional loop edges), optimizes with GTSAM, and republishes a corrected map,
+# path, map→odom TF, and a terrain DEM.
+#
+#   Options: …   accepted values / ranges (clamps enforced in C++)
+#   [def: X]     value used if the key is omitted
+#   INERT        parsed, but has no effect in this configuration
+# ─────────────────────────────────────────────────────────────────────────────
+graph_based_slam:
+  ros__parameters:
+
+    # ── Backend ──────────────────────────────────────────────────────────────
+    optimizer_backend: gtsam_isam2   # Solver. Options: gtsam_isam2|isam2 (incremental, retains state) | gtsam (full batch re-solve). Unknown → WARN + fallback. [def: gtsam_isam2]
+    use_sim_time: true               # Use /clock instead of wall time. Options: true|false. Must be true in sim.
+    use_odom_input: true             # Build submaps here from odom_input+cloud_input (LIO mode) instead of consuming a prebuilt map_array. Options: true|false. [def: false]
+    global_frame_id: map             # Optimized/corrected frame name. Options: any frame string. [def: map]
+    odom_frame_id: odom              # Frontend (DLIO) frame name. Options: any frame string. [def: odom]
+
+    # ── map→odom correction TF ───────────────────────────────────────────────
+    publish_map_to_odom_tf: true             # Broadcast map→odom = optimized_pose · odom_pose⁻¹; without it corrections never reach Nav2/RViz. Options: true|false. [def: false]
+    map_to_odom_tf_future_offset_sec: 0.35   # Stamp the TF this far ahead so consumers don't hit extrapolation gaps between updates; TFs stamped <= the previous one are dropped. Options: >=0.0 s (negatives floored to 0). [def: 0.0]
+
+    # ── Corrected map output ─────────────────────────────────────────────────
+    publish_modified_map_array_on_append: false  # Republish the full MapArray on every submap append (still published on full rebuild / map save). Options: true|false. [def: true]
+    publish_modified_map: false                  # Publish /modified_map (plain PointCloud2). Options: true|false. [def: true]
+
+    modified_map_publish_period_sec: 5.0         # Periodic corrected-map republish cadence; cheap when the graph is unchanged (re-stamps a cached message). Options: 0.0=off | >0 s. [def: 0.0]
+    modified_map_leaf_size: 0.15                 # Voxel leaf for /modified_map. Options: 0.0=no downsample | >0 m. INERT (publish_modified_map:false). [def: 0.0]
+    publish_modified_map_timed: true             # Publish /modified_map_timed — 32-byte records: x,y,z,intensity (f32), time (f64), submap_index (u32). Options: true|false. [def: true]
+    modified_map_timed_leaf_size: 0.15          # Voxel leaf for the timed cloud — the leaf actually in effect here; voxel merge keeps the newest time/submap_index; changing it forces a full rebuild. Options: -1=inherit modified_map_leaf_size | 0=off | >0 m. [def: -1.0]
+    map_save_dir: /home/er4-user/slam_ws/src/lidarslam_ros2/output/husky_seyond_graph             # Output root for the map_save service (std_srvs/Empty): pointcloud_map/*.pcd tiles + metadata, map.pcd, map_projector_info.yaml, pose_graph.g2o. Options: any writable path. [def: "."]
+
+    # ── Lunar DEM recorder ───────────────────────────────────────────────────
+    # Own thread, queue depth 1 (latest-snapshot-wins), never blocks the backend.
+    # Consumes the FULL corrected cloud before any visualization voxel filter.
+    dem/enabled: true                       # Master switch; spawns the DEM worker. Options: true|false. [def: false]
+    dem/update_period_sec: 5.0              # Min spacing between DEM jobs; bypassed (forced) on a new loop edge or map save. Options: >=0.1 s. [def: 10.0]
+    dem/storage_resolution_m: 0.20          # Cell size of the DEM written to disk. Options: >=0.01 m. [def: 0.10]
+    dem/preview_resolution_m: 0.30          # Coarser cell size for the RViz preview cloud. Options: >= storage_resolution_m. [def: 0.50]
+    dem/min_points_per_cell: 3              # Returns needed for a cell to count as measured; below it → NODATA. Options: >=1. [def: 3]
+    dem/terrain_percentile: 0.25            # Height quantile per cell — low value ignores overhangs and stray high returns. Options: 0.0–1.0 (0=min, 0.5=median, 1=max). [def: 0.25]
+    dem/interpolation/max_component_cells: 4            # Max hole size (4-connected cells) eligible for filling; holes touching the grid boundary are never filled. Options: <=0=disable | >=1. [def: 4]
+    dem/interpolation/search_radius_cells: 2            # Neighbourhood radius used for the fill fit. Options: >=1 cells. [def: 2]
+    dem/interpolation/min_valid_neighbors: 6            # Measured cells required nearby before filling at all. Options: >=1. [def: 6]
+    dem/interpolation/max_neighbor_height_range_m: 0.10 # Refuse to fill if neighbours disagree more than this (crater rim / curb → leave the hole). Options: >0 m. [def: 0.10]
+    dem/interpolation/max_plane_residual_m: 0.03        # Refuse to fill if the bilinear/plane fit RMS exceeds this. Options: >0 m. [def: 0.03]
+    dem/publish_preview: true               # Publish lunar_dem/preview (intensity = per-cell confidence). Options: true|false. [def: true]
+    dem/preview_max_cells: 250000           # Cap on preview cloud size (stride-decimated to fit). Options: >=1. [def: 250000]
+    dem/max_raster_cells: 4000000           # Hard cap on the stored raster; exceeding it ABORTS the DEM pass with status "error". Options: >=1000. [def: 4000000]
+    dem/output_dir: /home/er4-user/slam_ws/src/lidarslam_ros2/output/husky_seyond_graph/lunar_dem
+
+
+    # ── Backend registration (loop verification only) ────────────────────────
+    registration_method: GICP        # Scan matcher used to verify loop candidates. Options: GICP | NDT (anything else → ERROR + exit). GICP internals are hard-coded, not YAML-tunable. [def: NDT]
+    ndt_resolution: 5.0              # NDT voxel resolution. Options: >0 m. INERT (GICP selected). [def: 5.0]
+    ndt_num_threads: 0               # NDT thread count. Options: 0=auto | >0. INERT (GICP selected). [def: 0]
+    voxel_leaf_size: 0.2             # Leaf for the backend's loop-matching voxel filter only — not used for map assembly, DEM, or save. Options: >0 m. [def: 0.2]
+
+    # ── Loop closure — DISABLED (no candidate source enabled) ─────────────────
+    # No master switch exists: loop closure is off because all five use_* sources
+    # are false. The search worker still ticks but never produces a candidate, so
+    # the graph is odometry-chain only and map→odom stays ~identity.
+    use_distance_loop_candidates: false   # Proximity-based candidates (revisit by pose distance). Options: true|false. [def: true]
+    use_scan_context: false               # Scan-context descriptor candidates. Options: true|false. [def: false]
+    use_bev_descriptor: false             # Bird's-eye-view descriptor candidates. Options: true|false. [def: false]
+    use_solid_descriptor: false           # SOLID descriptor candidates. Options: true|false. [def: false]
+    use_triangle_descriptor: false        # Triangle (STD/BTC-style) descriptor candidates. Options: true|false. [def: false]
+
+    loop_detection_period: 1000           # Loop-search tick period. Options: >0 ms. [def: 1000]
+    deterministic_loop_scheduling: false  # Query every submap exactly once (results independent of tick timing) vs only the latest per tick. Options: true|false. [def: false]
+    threshold_loop_closure_score: 15.0    # Max registration fitness to accept a loop (lower = stricter). Options: >0. INERT. [def: 1.0]
+    distance_loop_closure: 15.0           # Max pose distance for a DISTANCE candidate. Options: >0 m. INERT. [def: 20.0]
+    range_of_searching_loop_closure: 50.0 # Search radius around the query pose. Options: >0 m. INERT. [def: 20.0]
+    search_submap_num: 8                  # ± submap window merged into the registration target. Options: >=1. INERT. [def: 3]
+    max_loop_candidate_count: 3           # Candidates verified per query. Options: >=1. INERT. [def: 3]
+    loop_edge_dedup_index_window: 20      # Suppress near-duplicate loop edges within this index distance. Options: >=0. INERT. [def: 8]
+    loop_max_translation_delta: 15.0      # Reject a loop whose correction translates more than this. Options: >0 m. INERT. [def: 15.0]
+    loop_max_rotation_delta_deg: 45.0     # Reject a loop whose correction rotates more than this. Options: >0 deg. INERT. [def: 45.0]
+    loop_max_translation_delta_descriptor: 4.0   # Tighter translation cap for descriptor-sourced loops only. Options: -1=use generic cap | >0 m. INERT. [def: -1.0]
+    loop_max_rotation_delta_deg_descriptor: 20.0 # Tighter rotation cap for descriptor-sourced loops only. Options: -1=use generic cap | >0 deg. INERT. [def: -1.0]
+    loop_z_preshift_enabled: true         # Pre-shift the match initial guess in z using robust ground height (z is the least-observable axis). Options: true|false. INERT. [def: false]
+    loop_z_preshift_max_m: 5.0            # Cap on that z pre-shift. Options: >0 m. INERT. [def: 5.0]
+    loop_edge_info_weight: 200.0          # Loop-edge confidence; effective weight = this / fitness, so a poor loop becomes a weak edge rather than a rejected one. Options: >0. INERT. [def: 100.0]
+    loop_edge_robust_kernel_delta: 1.0    # Robust-kernel delta for loop edges (outlier down-weighting knee). Options: >0. INERT. [def: 1.0]
+
+    # ── Adjacent (odometry-chain) edges — ACTIVE ──────────────────────────────
+    num_adjacent_pose_cnstraints: 5        # Chain edges per pose (i-5..i-1 → i); each edge's weight is divided by its index separation. Options: >=1. [def: 5]
+    submap_distance_threshold: 0.3         # New submap every N m of travel (translation only — pure rotation makes none; jumps >100 m are discarded). Options: >0 m. [def: 1.5]
+    adjacent_edge_info_weight: 1000.0      # Confidence in odometry-chain edges. Options: >0 (higher = trust odometry more, resist correction). [def: 1000.0]
+    adjacent_edge_info_weight_z_scale: 0.3 # Multiplies only the z diagonal of the translation block — trusts odometry z less so z corrections can propagate through the chain. Options: >0 (1.0=no change, <1=trust z less). [def: 1.0]
+
+    # ── Scan context (kept for reference; inert while use_scan_context:false) ──
+    scan_context_threshold: 0.10                     # Max scan-context descriptor distance to shortlist a candidate (lower = stricter). Options: >0. [def: 0.3]
+    scan_context_loop_closure_score_threshold: 1.5   # Relaxed fitness ceiling for scan-context candidates specifically. Options: -1=disabled (use generic) | >0. [def: -1.0]
+    prefer_scan_context_candidates: false            # Rank scan-context candidates ahead of distance candidates. Options: true|false. [def: false]
+    use_3d_bbs_for_scan_context: false               # Verify scan-context candidates with 3D branch-and-bound global search instead of the pose-derived initial guess. Options: true|false. [def: false]
+
+    # ── Triangle descriptor (inert while use_triangle_descriptor:false) ────────
+    triangle_descriptor_keypoint_mode: "surface_saliency"  # Keypoint extractor. Options: bev_max_height (outdoor, tall structure) | edge_3d (PCA edgeness, indoor/narrow-FOV) | surface_saliency (detrends ground, picks curvature extrema — crater rims, curbs, boulders). [def: bev_max_height]
+    triangle_descriptor_grid_size_m: 60.0                  # Extent of the 2.5D grid used for keypoint extraction. Options: >0 m. [def: 60.0]
+    triangle_descriptor_grid_cells: 100                    # Grid resolution (cells per side). Options: >=8. [def: 100]
+    triangle_descriptor_max_keypoints: 40                  # Cap on keypoints per submap. Options: >=4. [def: 40]
+    triangle_descriptor_min_salience_m: 0.8                # Min height salience for a keypoint. Options: >0 m. [def: 0.8]
+    triangle_descriptor_surface_plane_fit_percentile: 0.3  # Percentile used for the robust ground-plane fit that gets detrended out. Options: 0.05–1.0. [def: 0.3]
+    triangle_descriptor_surface_curvature_radius_cells: 1  # Neighbourhood radius for curvature estimation. Options: >=1 cells. [def: 1]
+    triangle_descriptor_surface_min_saliency_percentile: 0.0  # Percentile floor for saliency (0 = keep top-N instead of a hard gate). Options: 0.0–1.0. [def: 0.0]
+    triangle_descriptor_edge_voxel_size_m: 0.4             # Downsample leaf before edge-keypoint extraction. Options: >=0 m (0=off). [def: 0.4]
+    triangle_descriptor_edge_neighbor_radius_m: 1.0        # Neighbourhood radius for PCA edgeness. Options: >=0.05 m. [def: 1.0]
+    triangle_descriptor_edge_min_neighbors: 6              # Min neighbours required to evaluate edgeness. Options: >=4. [def: 6]
+    triangle_descriptor_edge_min_edgeness: 0.5             # Min PCA edgeness to accept an edge keypoint. Options: 0.0–1.0. [def: 0.5]
+    triangle_descriptor_edge_nms_radius_m: 2.0             # Non-maximum-suppression radius between edge keypoints. Options: >=0 m. [def: 2.0]
+    triangle_descriptor_min_edge_m: 2.0                    # Min triangle side length. Options: >0 m. [def: 2.0]
+    triangle_descriptor_max_edge_m: 50.0                   # Max triangle side length (must exceed min, else auto-set to min×5). Options: > min_edge_m. [def: 50.0]
+    triangle_descriptor_max_triangles: 3000                # Cap on triangles per submap. Options: >=100. [def: 3000]
+    triangle_descriptor_edge_bin_m: 0.5                    # Quantization of the 3 edge lengths that form the hash key. Options: >0 m. [def: 0.5]
+    triangle_descriptor_quad_feature_bin_m: 0.5            # Adds a 4th hash dimension (centroid→nearest-keypoint distance) to reject wrong-but-agreeing triangles in repeated geometry. Options: 0=disabled (3-edge hash) | >0 m. [def: 0.0]
+    triangle_descriptor_verify_top_k: 3                    # Verify this many top-voted submaps and let RANSAC inlier quality pick the winner, rather than trusting top-1-by-votes. Options: >=1 (1 = legacy behaviour). [def: 1]
+    triangle_descriptor_min_votes: 6                       # Min hash votes for a submap to be considered. Options: >=1. [def: 6]
+    triangle_descriptor_min_inliers: 4                     # Min RANSAC inliers to accept a match. Options: >=1. [def: 4]
+    triangle_descriptor_min_inlier_ratio: 0.08             # Min inliers/evaluated ratio — a relative-density floor to complement the absolute count. Options: 0.0=off – 1.0. [def: 0.0]
+    triangle_descriptor_max_pairs: 64                      # Cap on triangle pairs evaluated in RANSAC (lower makes min_inlier_ratio more informative). Options: >=3. [def: 64]
+    triangle_descriptor_min_4th_point_agreements: 0        # Require this many extra keypoints to agree with the winning SE(3) — an independent check, since 3 points alone uniquely determine SE(3). Options: 0=disabled | >0. [def: 0]
+    triangle_descriptor_fourth_point_max_distance_m: 2.0   # Match distance for that 4th-point check. Options: >0 m. [def: 2.0]
+    triangle_descriptor_refine_se3_with_all_inliers: false # Re-estimate SE(3) by pooling all inlier correspondences (Umeyama) instead of keeping the 3-point hypothesis. Options: true|false. [def: false]
+    triangle_descriptor_inlier_translation_m: 2.0          # Translation tolerance for counting a RANSAC inlier. Options: >0 m. [def: 2.0]
+    triangle_descriptor_inlier_rotation_deg: 5.0           # Rotation tolerance for counting a RANSAC inlier. Options: >0 deg. [def: 5.0]
+    triangle_descriptor_exclude_recent: 4                  # Skip the N most recent submaps as match targets (avoid trivial self-matches). Options: >=0. [def: 4]
+    triangle_verify_with_bev: false                        # Cross-check triangle candidates against BEV mutual-visibility distance (needs use_bev_descriptor). Options: true|false. [def: false]
+    triangle_verify_bev_max_distance: 0.30                 # Max BEV distance allowed in that cross-check. Options: >0. [def: 0.30]
+    triangle_loop_closure_score_threshold: 3.5             # Relaxed fitness ceiling for triangle candidates with strong inlier evidence. Options: -1=disabled | >0. [def: -1.0]
+    triangle_relaxed_fitness_min_inliers: 8                # Inlier count required to qualify for that relaxed ceiling. Options: -1=no extra bar | >0. [def: -1]
+    triangle_relaxed_fitness_min_inlier_ratio: 0.10        # Inlier ratio required to qualify for that relaxed ceiling. Options: -1=no extra bar | 0.0–1.0. [def: -1.0]
+
+    # ── Storage / misc ───────────────────────────────────────────────────────
+    use_dynamic_object_filter: false # Strip moving objects — applied only at map-save time, not to live output. Options: true|false. [def: false]
+    use_pcd_cache: true              # Offload submap clouds to disk and clear them from RAM; per-process flock'd run_<pid>_<ns>/ dir, auto-removed on exit, abandoned dirs reaped at startup. Options: true|false. [def: false]
+    pcd_cache_dir: /dev/shm/graph_slam_pcd_cache  # Cache root. /dev/shm = tmpfs (RAM-backed, fast, disposable — not persistent storage). Options: any writable path. [def: /tmp/graph_slam_pcd_cache]
+    use_save_map_in_loop: false      # Save the map on every accepted loop closure. Options: true|false (false = save only on explicit service call). [def: true]
+    debug_flag: true                 # Verbose backend logging: first-message notices, throttled stats, constraint counts. Options: true|false. [def: false]
+# ─────────────────────────────────────────────────────────────────────────────
+reference_path_publisher:
+  ros__parameters:
+    use_sim_time:              true
+    pose_topic:                /gazebo/dynamic_pose
+    frontend_odom_topic:       /dlio/odometry
+    path_topic:                /reference/path
+    fixed_frame:               map
+    align_to_frontend:         true
+    zero_start:                true
+    # Husky sim model names
+    model_names:               husky,husky_0000,robot,base_link,chassis_link
+    fallback_transform_index:  0
+    allow_fallback_entity:     true
+    min_distance_m:            0.02
+    max_poses:                 12000
+    extra_yaw_offset_deg:      0.0

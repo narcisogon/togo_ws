@@ -1,119 +1,64 @@
-# Togo
-
-Instructions for running Togo, the Clearpath A300 Husky Autonomous Mobile Platform (AMP).
-Please refer to the [Husky User Manual](https://docs.clearpathrobotics.com/docs_robots/outdoor_robots/husky/a300/user_manual_husky/) for more in-depth information.
-
-The Togo platform includes several systemd services that run whenever the robot is booted up.
-These services take the place of the default Clearpath configuration that comes on the robot out-of-the-box.
-For more information about enabling/disabling Clearpath's baseline configuration, please refer to our [Clearpath systemd docs](./docs/CLEARPATH_SYSTEMD_SERVICES.md).
-
-![Togo Robot](./docs/images/togo.jpg)
+# togo
 
 ## Table of Contents
 
-- [Togo](#togo)
+- [togo](#togo)
   - [Table of Contents](#table-of-contents)
-  - [Hardware Run Instructions](#hardware-run-instructions)
-    - [Transport Mode](#transport-mode)
-    - [Non-Transport Mode](#non-transport-mode)
-    - [Joystick Control](#joystick-control)
-    - [Launch Sensors](#launch-sensors)
-    - [Shutting Down the Robot](#shutting-down-the-robot)
-  - [Gazebo Run Instructions](#gazebo-run-instructions)
-    - [Nav2 Integration](#nav2-integration)
+  - [Sensors](#sensors)
+    - [OAK-D cameras](#oak-d-cameras)
+    - [Fixposition GNSS](#fixposition-gnss)
+    - [Seyond 3D lidar](#seyond-3d-lidar)
+    - [Phidgets spatial](#phidgets-spatial)
+  - [External packages to pull in source code from](#external-packages-to-pull-in-source-code-from)
+  - [Deploy](#deploy)
+    - [Deploy Testing](#deploy-testing)
+      - [Stopping Clearpath](#stopping-clearpath)
+      - [Starting Select Clearpath Services](#starting-select-clearpath-services)
+      - [Restart Clearpath](#restart-clearpath)
+  - [Gazebo](#gazebo)
 
-## Hardware Run Instructions
+## Sensors
 
-See our [hardware overview docs](./docs/HARDWARE_OVERVIEW.md) for more information about Togo's hardware components.
+### OAK-D cameras
 
-Hardware instructions are taken directly from the [Husky Quick Start](https://docs.clearpathrobotics.com/docs_robots/outdoor_robots/husky/a300/user_manual_husky/#quick-start) guide.
-However, we provide additional details specific to Togo's setup.
+These run from apt packages included from ros-jazzy-depthai-ros.
+These end up launching the driver itself for the camera information, as well as a node that converts the RGBD data into point clouds.
+Both of these nodes are launched inside a composable node container.
+I think the source code should be [here](https://github.com/luxonis/depthai-ros/tree/jazzy).
 
-> [!NOTE]
-> The following instructions are for running core Togo functionality.
-> Please refer to our [development docs](./docs/TOGO_DEVELOPMENT.md) for information about running your own code on Togo.
+### Fixposition GNSS
 
-1. Verify the robot is in a ready state.
-   1. Unplug the charger and any ethernet cables.
-   2. Close the port hatch door.
-    The robot will not run if this hatch is open.
+These run on this open source driver package, [fixposition_driver](https://github.com/fixposition/fixposition_driver) package.
+The documentation for the driver exists [here](https://docs.fixposition.com/fd/fixposition-ros-driver)
 
-    ![Port Hatch](./docs/images/togo-back-labeled.png)
+### Seyond 3D lidar
 
-2. Press and hold the Power Button for one second and then release it.
-  The 4 status lights will be solid red while the robot's computer boots up.
+These run on this open source driver package, [seyond_ros_driver](https://github.com/Seyond-Inc/seyond_ros_driver).
 
-    ![Power Button](./docs/images/power-and-reset-buttons-labeled.jpg)
+### Phidgets spatial
 
-3. Wait one minute for the robot's computer and MCU to boot up.
-4. Ensure all e-stops (two on robot, front and rear, and one wireless) are unplunged.
-  If one of the e-stops is pressed, all 4 status lights will be blinking red in unison.
-  Once the e-stops are released, the status lights will blinking red, alternating left/right, indicating the safety restart button needs to be pressed.
+I think this is based on the apt package ros-jazzy-phidgets-spatial.
+Clearpath typically launches the generic driver node along with an imu filter node as well.
+These also get launched as a part of a composable node container.
+I think the source code should be [here](https://github.com/ros-drivers/phidgets_drivers/tree/jazzy).
 
-    ![Wireless E-Stop and Safety Reset Button](./docs/images/wireless-estop-reset-labeled.png)
+## External packages to pull in source code from
 
-5. Press and release the Safety Restart button, either the one on the robot or the wireless reset button.
-6. When the robot is up and ready to go, the front lights should be solid white and the rear lights (by the mast) should be solid red.
-7. All remaining hardware instructions will be run on the robot's control computer. SSH into the robot from the console computer:
+fixposition_driver
 
-    ```bash
-    ssh robot
-    ```
+- The driver is located [here](https://github.com/fixposition/fixposition_driver).
+  - Make sure you are cloning recursively, as there are submodules.
+- There is an extra step where you should run the script `setup_ros_ws.sh` from the fixposition_driver directory in your directory. Instructions are [here](<https://docs.fixposition.com/fd/installation-and-usage#Installationandusage-a)SetupdriverforanexistingROSworkspace>). It seems like that might just add some colcon ignores on things you don't need depending on your ros version.
 
-### Transport Mode
+seyond_ros_driver
 
-By default, Togo starts in `transport_mode`.
-This means the basic platform comm nodes, control nodes, and joystick control nodes are brought up in the Togo docker container when the robot starts.
-For more in-depth information about what transport mode does, please refer to [transport mode docs](../../references/documentation/Transport_Mode.md).
+- The driver is located [here](https://github.com/Seyond-Inc/seyond_ros_driver).
+  - Make sure you are cloning recursively, as there are submodules.
+- There are instructions for building the drivers inside the workspace [here](https://github.com/Seyond-Inc/seyond_ros_driver/blob/main/src/seyond_lidar_ros/README.md#compile).
 
-> [!NOTE]
-> Transport mode is intended for when we want basic robot functionality *without using the console computer* for anything besides visualization.
-> If you plan on using the console computer to run application nodes, please proceed to [Non-Transport Mode instructions](#non-transport-mode).
+## Deploy
 
-When you SSH into the robot, the transport mode status will be reported (transport mode defaults to on):
-
-![Transport Mode On](./docs/images/transport-mode-on.png)
-
-To check whether Togo is in transport mode:
-
-```bash
-check_transport_mode
-```
-
-If the previous steps were completed in transport mode, then Togo is ready to go!
-See [joystick control](#joystick-control) below for more information on driving Togo.
-
-### Non-Transport Mode
-
-To stop transport mode, run the following alias on Togo (*not* in a docker container):
-
-```bash
-stop_transport_mode
-```
-
-This kills the docker container running transport mode.
-This means all of the basic platform comm and control nodes are no longer running.
-
-We can confirm transport mode is off using the command `check_transport_mode`:
-
-![Transport Mode Off](./docs/images/check-transport-mode.png)
-
-All remaining hardware instructions will be run on the robot's control computer in the hardware development docker container.
-Connect to the [hardware development docker container](../../README.md#hardware-development-image):
-
-```bash
-# bring up the container; this will automatically start the micro-ROS agent docker container as well
-docker compose up hw-dev -d --force-recreate
-
-# connect to the running container
-docker compose exec hw-dev terminator
-```
-
-> [!NOTE]
-> Unless otherwise noted, all remaining hardware instructions should be run on the robot's control computer in the hardware development docker container.
-> The `docker compose exec` command above will spawn a terminator window where all of the following commands can be run.
-
-To bring up the robot manually in non-transport mode:
+To deploy Togo hardware:
 
 1. Start Husky hardware communications:
 
@@ -122,74 +67,127 @@ To bring up the robot manually in non-transport mode:
     ```
 
 2. To bring up Togo's controllers and teleop control (enabling control through the PS4 controller),
-we include a convenient launch file for Togo's hardware operation mode.
+we include a few convenient launch files for Togo's different operation modes.
+   1. For Togo hardware:
+
+        ```bash
+        ros2 launch togo_deploy control_hardware.launch.py
+        ```
+
+        This launch file is equivalent to launching controls and teleop separately:
+
+        ```bash
+        # controllers
+        ros2 launch togo_deploy control.launch.py
+        # teleop
+        ros2 launch togo_deploy teleop.launch.py
+        ```
+
+3. Start Togo's sensors (and related nodes, including the IMU filter and localization) and view the robot and sensor data in RViz:
 
     ```bash
-    ros2 launch togo_deploy control_hardware.launch.py
+    ros2 launch togo_deploy togo_sensors.launch.py
     ```
 
-3. Start Togo's system status monitor:
+4. (Optional; ***BE READY ON THE E-STOP!***) To check that the controllers are communicating with the motor driver properly, you can publish a small velocity command from the command line:
 
     ```bash
-    ros2 run togo_status_handler togo_status_terminal --ros-args -r __ns:=/husky
+    ros2 topic pub /platform_velocity_controller/cmd_vel geometry_msgs/msg/TwistStamped 'header:
+    stamp: now
+    frame_id: ''
+    twist:
+    linear:
+        x: 0.05
+        y: 0.0
+        z: 0.0
+    angular:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+    '
     ```
 
-    The status monitor displays information about Togo's robot state (e-stopped, needs reset, and driving based on lighting), battery information, battery temperature, plugged in and charging states, and driving state.
-    Please see [status monitor docs](./docs/SYSTEM_STATUS_MONITOR.md) for more information about the data provided by the status monitor.
-    Below is an example status monitor showing the robot is e-stopped, nominal battery charge and temperature, and the robot is plugged in and charging.
+### Deploy Testing
 
-    ![Togo Status Monitor](./docs/images/status-monitor.png)
+This info will eventually be wrapped up in the `systemd` processes on the Togo controls computer.
+For now, a few helpful notes on manually starting/stopping Clearpath services:
 
-    The status monitor can also be started without a display with flag `-n` for `--no-display`, in which case status information will be printed out:
+#### Stopping Clearpath
+
+Stop all Clearpath stuff:
+
+- To stop all of the Clearpath processes:
 
     ```bash
-    ros2 run togo_status_handler togo_status_terminal -n --ros-args -r __ns:=/husky
+    sudo systemctl stop clearpath-robot.service
     ```
 
-    ![Togo Status Monitor No Display](./docs/images/status-monitor-no-display.png)
+- To disable all of the Clearpath processes and prevent them from automatically restarting when they die:
 
-4. At this point, Togo is ready to drive!
-  See [joystick control](#joystick-control) below for more information on driving Togo.
+    ```bash
+    sudo systemctl disable clearpath-robot.service
+    ```
 
-1. To launch your own application nodes, you may need to [launch the sensors](#launch-sensors) as well.
-  Please see [development on Togo docs](./docs/TOGO_DEVELOPMENT.md) for best practices for your own development on Togo!
+- Clearpath starts a lot of docker containers by default. We can view all of the running containers:
 
-### Joystick Control
+    ```bash
+    docker container ps
+    ```
 
-At this point after following the instructions above (for either transport or non-transport mode), joystick control should be active on the robot.
-To use the PS4 controller to run the robot:
+    To stop all running Clearpath dockers:
 
-1. Ensure the controller is charged.
-2. Press the middle button to power the controller on and connect it to the robot.
-3. L1 is the fast mode deadman switch, R1 is the slow mode deadman switch.
- Press and hold either deadman for whichever drive mode is desired.
- By default, fast mode velocity and acceleration limits are twice as fast as the slow mode limits.
-4. Use the left joystick to send linear (x-direction) commands to Togo. Use the right joystick to send angular (z-direction) commands to Togo.
+    ```bash
+    docker stop $(docker ps -q)
+    ```
 
-![PS4 Controller](./docs/images/ps4-controller-labeled.png)
+- As a sanity check, you can confirm everything has stopped:
 
-### Launch Sensors
+    ```bash
+    # Clearpath robot services
+    systemctl status clearpath-robot.service
+    # Clearpath dockers
+    docker container ps
+    ```
 
-Start Togo's sensors (and related nodes, including the IMU filter and localization) and view the robot and sensor data in RViz:
+#### Starting Select Clearpath Services
+
+Start the background Clearpath services that we do actually need:
+
+- ROS discovery service: copy the commands from `/etc/clearpath/discovery-server-start`:
+
+    ```bash
+    # source ROS
+    source /opt/ros/jazzy/setup.bash
+    # start ROS discovery service
+    fastdds discovery -i 0 -p 11811
+    ```
+
+    This server will hang in the terminal.
+- VCAN
+  - Start the VCAN service:
+
+    ```bash
+    sudo systemctl start clearpath-vcan.service
+    ```
+
+  - Check the status of this process:
+
+    ```bash
+    systemctl status clearpath-vcan.service
+    ```
+
+#### Restart Clearpath
+
+It's nice to restart Clearpath for now while we are still bringing up Togo.
 
 ```bash
-ros2 launch togo_deploy togo_sensors.launch.py
+# re-enable Clearpath robot services
+sudo systemctl enable clearpath-robot.service
+# re-start Clearpath robot services
+sudo systemctl start clearpath-robot.service
 ```
 
-For more information about the sensors available on Togo, please see [hardware overview of sensors](./docs/HARDWARE_OVERVIEW.md#sensors).
-
-### Shutting Down the Robot
-
-When you're done with Togo for the day:
-
-1. Stop any nodes you started.
-2. Exit the docker container.
-3. Turn off the robot by pressing the power button.
-4. Plug the robot in to charge.
-    ![Charger](./docs/images/charger.jpg)
-5. Say "Good boy, Togo!" and give him a lil pat of appreciation.
-
-## Gazebo Run Instructions
+## Gazebo
 
 To bring up Togo in Gazebo, run:
 
@@ -236,10 +234,3 @@ twist:
     z: 0.0
 '
 ```
-
-If you have any problems running Gazebo, please refer to our [Gazebo troubleshooting docs](./docs/GAZEBO_TROUBLESHOOTING.md).
-
-### Nav2 Integration
-
-A nav2 configuration is provided, along with several sample worlds and deployment mechanisms.
-For more information refer to the [README](./togo_nav2/README.md).

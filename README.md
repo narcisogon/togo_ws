@@ -1,6 +1,6 @@
 # Togo Containerized Workspace
 
-Basic workflow for the EG Husky Togo.
+Basic dockerized workspace for the EG Husky Togo.
 The contents of the `src` directory should be treated similarly to a "normal" ROS workspace.
 That is, source code can be imported and added as needed to `src/`, then be built and run inside of an isolated, ROS enabled environment.
 
@@ -10,14 +10,11 @@ Note the `2`! As this is intended to be isolated from your system.
 
 ## Quick Development Setup
 
-1) Install Docker, if it is not already available
+1) Install Docker
     - Don't worry about Docker Desktop
-    - For installing docker on Ubuntu we recommend using the [utility script](https://docs.docker.com/engine/install/ubuntu/#install-using-the-convenience-script)
+    - For Ubuntu recommend using the [utility script](https://docs.docker.com/engine/install/ubuntu/#install-using-the-convenience-script)
     - After running the utility script, you should run the [post-installation steps for linux](https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user), which helps manage the user settings and running without root access.
-    - Most importantly - make sure you are in the computer's `docker` usergroup with `sudo usermod -aG docker $USER` (requires logging out/logging back in)
-
-2) ***VERY IMPORTANT*** Recursively initialize all submodules.
-Note that the fixposition and seyond driver packages contain many nested submodules, so the `--recursive` flag is ***critical***.
+2) ***VERY IMPORTANT*** Recursively initialize all submodules.  Note that the fixposition and seyond driver packages contain many nested submodules, so the `--recursive` flag is ***critical***.
 
     ```bash
     git submodule update --init --recursive
@@ -64,17 +61,9 @@ docker compose build dev
 # Start it
 docker compose up dev -d
 
-# Start a bash session in the container
-docker compose exec dev bash
-
-# Or optionally connect to the console by launching a terminator session (requires a display):
+# Connect to the console
 docker compose exec dev terminator
 ```
-
-It is possible for multiple devs to work on the same machine, if users:
-
-1. Comment out line 23 (`network_mode: host`) of docker_compose.yml
-2. Accept that you will not be able to use this computer to run the robot - only sim
 
 ### Hardware Development Image
 
@@ -90,10 +79,6 @@ docker compose up hw-dev -d
 # Connect to the console
 docker compose exec hw-dev terminator
 ```
-
-> [!WARNING]
-> Especially on the robot hardware, it will be helpful to somewhat regularly rebuild the docker images (`transport` and `hw-dev`) to update the packages (especially Clearpath packages) used within the containers.
-> Rebuilding the docker images will ensure the latest package updates are pulled down and used on the hardware.
 
 ### Building the Togo Workspace
 
@@ -112,7 +97,7 @@ These are handled by the `pre_build.sh` script run before building the docker im
 By the time you attach to the container, these packages can be built as expected within a ROS workspace.
 
 For more information on running applications refer to Togo's [README.md](./src/togo/README.md).
-To get started, we recommend [Gazebo instructions](./src/togo/README.md#gazebo-run-instructions) for the dev image and [hardware instructions](./src/togo/README.md#hardware-run-instructions) for the hardware image.
+To get started, we recommend [Gazebo instructions](./src/togo/README.md#gazebo) for the dev image and [hardware instructions](./src/togo/README.md#deploy) for the hardware image.
 
 ## Other Things to Note
 

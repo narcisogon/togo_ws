@@ -1,0 +1,124 @@
+Panels:
+  - Class: rviz_common/Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Name: TF
+    - Class: rviz_default_plugins/Map
+      Enabled: false
+      Name: Global Costmap
+      Topic:
+        Value: /global_costmap/costmap
+    - Class: rviz_default_plugins/Map
+      Enabled: false
+      Name: Local Costmap
+      Topic:
+        Value: /local_costmap/costmap
+    - Class: rviz_default_plugins/Map
+      Enabled: false
+      Name: SLAM Occupancy Grid
+      Topic:
+        Value: /map
+    - Class: rviz_default_plugins/Map
+      Enabled: false
+      Name: Local Hazard Map
+      Topic:
+        Value: /local_hazard_map
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: SLAM Map Occupied Cells
+      Topic:
+        Value: /map_debug_points
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: Global Costmap Occupied Cells
+      Topic:
+        Value: /global_costmap/debug_points
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: Local Hazard Occupied Cells
+      Topic:
+        Value: /local_hazard_debug_points
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: Backend Modified Map
+      Topic:
+        Value: /modified_map
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: Registered LiDAR
+      Topic:
+        Value: /dlio/deskewed
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: Global Plan
+      Topic:
+        Value: /plan
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: DLIO Path
+      Topic:
+        Value: /dlio/path
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: Backend Path
+      Topic:
+        Value: /modified_path
+  Enabled: true
+  Global Options:
+    Fixed Frame: map
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+    - Class: rviz_default_plugins/SetInitialPose
+      Covariance x: 0.25
+      Covariance y: 0.25
+      Covariance yaw: 0.06853891909122467
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /initialpose
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        # goal_safety_relay subscribes here, checks the goal against the
+        # live global costmap, relocates it to the nearest safe cell if
+        # it lands on/near a hazard, and only then calls NavigateToPose --
+        # so nothing downstream ever receives an unsafe goal directly.
+        Value: /goal_pose_requested
+    - Class: rviz_default_plugins/PublishPoint
+      Single click: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /clicked_point
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 20
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 0.785
+      Target Frame: <Fixed Frame>
+      Yaw: 0.785
+    Saved: ~
