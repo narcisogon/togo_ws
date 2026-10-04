@@ -36,6 +36,7 @@ graph_based_slam source files by responsibility.
 */
 
 #include "graph_based_slam/graph_based_slam_component.h"
+#include "hazard/hazard_worker.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -1321,6 +1322,8 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
 
   initializePubSub();
 
+  hazard_mapping_ = std::make_unique<hazard::Worker>(*this, global_frame_id_, odom_frame_id_);
+
   map_save_srv_ = create_service<std_srvs::srv::Empty>(
     "map_save",
     std::bind(
@@ -1358,6 +1361,8 @@ GraphBasedSlamComponent::~GraphBasedSlamComponent()
   if (dem_worker_.joinable()) {
     dem_worker_.join();
   }
+  // Join hazard reads before deleting the shared submap PCD cache.
+  hazard_mapping_.reset();
   cleanupPcdCacheSession();
 }
 
@@ -1373,6 +1378,7 @@ void GraphBasedSlamComponent::requestShutdown()
   search_worker_cv_.notify_all();
   publish_worker_cv_.notify_all();
   dem_worker_cv_.notify_all();
+  if (hazard_mapping_) {hazard_mapping_->stop();}
 }
 
 /*

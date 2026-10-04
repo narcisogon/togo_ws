@@ -200,19 +200,8 @@ Both shell scripts trap `SIGINT` / `SIGTERM` / `SIGHUP` / `EXIT` and kill the **
 every node `ros2 launch` spawned goes down — not just the launch process. Grace period is
 `SHUTDOWN_GRACE_SEC` (default `5`) seconds, then `SIGKILL`.
 
-`run_nav2_only.sh` additionally does a name-based sweep afterward and force-kills any survivor from:
-
-```
-controller_server        smoother_server          planner_server
-behavior_server          bt_navigator             waypoint_follower
-velocity_smoother        lifecycle_manager        slam_to_occupancy_grid
-hazard_patch_node        global_costmap_composer   goal_safety_relay
-local_hazard_grid        occupancy_grid_to_points  debug_map_publisher
-rviz2
-```
-
-Clean exit prints `[nav2] All nodes confirmed dead. `. If you instead see
-`WARNING: '<node>' still alive — force killing`, it was cleaned up but shut down uncleanly.
+`run_nav2_only.sh` cleans up only its own launch process group. It does not
+sweep generic node names or kill the SLAM terminal's RViz.
 
 ---
 
@@ -269,17 +258,13 @@ Hardcoded in the launch call: `use_sim_time:=true`, `map_save_period:=60`.
 | `USE_SIM_TIME` | `true` | keep `true` in sim |
 | `AUTOSTART` | `true` | lifecycle nodes auto-configure/activate |
 | `RVIZ` | `false` | off by default — SLAM RViz is usually already open |
-| `DEBUG_MAP` | `false` | enables `debug_map_publisher` |
-| `USE_SLAM_MAP` | `true` | consume the live SLAM map instead of a static one |
-| `USE_PATCH_HAZARD_MAP` | `true` | enable hazard patching in the costmap |
-| `REQUEST_INITIAL_MAP_SAVE` | `true` | ask SLAM for a map snapshot at startup |
-| `PARAMS_FILE` | *(empty)* | set to override the launch file's default Nav2 params; passed as `params_file:=` |
+| `PARAMS_FILE` | source `togo_navigation/config/nav2_slam_params.yaml` | override Nav2 settings |
 | `SHUTDOWN_GRACE_SEC` | `5` | seconds before `SIGKILL` |
 
 Example:
 
 ```bash
-RVIZ=true DEBUG_MAP=true ./run_nav2_only.sh
+RVIZ=true ./run_nav2_only.sh
 PARAMS_FILE=/home/er4-user/slam_ws/src/lidarslam_ros2/togo_navigation/params/my_nav2.yaml ./run_nav2_only.sh
 ```
 
@@ -327,7 +312,7 @@ togo_sim.sh  (~/ws)
 | SLAM path drifts/warps badly | Try `DLIO_DESKEW=false`, or flip `TIMED_CLOUD_REVERSE_COLUMNS=true` if the per-point timestamp order is reversed. |
 | Deskew looks wrong / stretched clouds | `TIMED_CLOUD_SCAN_PERIOD` doesn't match the actual LiDAR rate — default `0.0666666667` assumes 15 Hz. |
 | Truth path missing or in the wrong place | `fixed_frame` must match `ODOM_FRAME` (`odom`), and `slam_topic` must match the SLAM path topic (`/dlio/path_simple`). |
-| Nodes survive `Ctrl+C` | Should not happen — `run_nav2_only.sh` sweeps by name. If it does, `pkill -f <node_name>` manually. |
+| Nodes survive `Ctrl+C` | `run_nav2_only.sh` stops its own launch process group. Check the original terminal's shutdown log and identify surviving processes before stopping them. |
 | Second run behaves oddly | Leftover nodes from a previous session. Verify with `ros2 node list` before relaunching. |
 
 Useful checks:
@@ -362,3 +347,8 @@ cd ~/slam_ws/src/lidarslam_ros2/scripts/togo && ./run_nav2_only.sh
 
 Stages 2–4 are independent processes: you can restart SLAM or Nav2 without touching the simulator, as long
 as you respect the ordering (SLAM before Nav2).
+
+Hazard mapping is owned by the graph backend worker, configured under
+`graph_based_slam` in `seyond_dlio_graph.yaml`. Nav2 retains planning and driving,
+with both costmaps importing the same backend grid. See
+[backend hazard mapping](graph_based_slam/hazard/README.md).

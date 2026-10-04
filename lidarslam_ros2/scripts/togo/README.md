@@ -1,7 +1,8 @@
 # TOGO/Husky SLAM and Nav2 Scripts
 
-The canonical operator instructions are in
-[`docs/husky-seyond-runbook.md`](../../docs/husky-seyond-runbook.md).
+The operator workflow is documented in [the SLAM README](../../README.md).
+Backend hazard settings and diagnostics are documented in
+[backend hazard mapping](../../graph_based_slam/hazard/README.md).
 
 ## Primary entrypoints
 
@@ -10,7 +11,7 @@ The canonical operator instructions are in
 | `run_live_seyond_dlio_slam.sh` | Gazebo Seyond simulation using DLIO + graph SLAM | Sim `/clock` | `lidarslam/param/seyond_dlio_graph.yaml` |
 | `run_replay_husky_real.sh` | Corrected/retimed real Husky bag | Bag `/clock` | Standalone `seyond_dlio_replay.yaml` |
 | `run_live_husky_real_dlio.sh` | Real live Husky/Seyond sensors | Wall time | `seyond_dlio_graph.yaml`, then `seyond_dlio_live_real.yaml` |
-| `run_nav2_with_slam.sh` | Nav2 + global/local hazard mapping after SLAM | Selected with `NAV2_USE_SIM_TIME` | `togo_navigation/config/nav2_slam_params.yaml` |
+| `run_nav2_only.sh` | Nav2 planning and driving using the backend hazard grid | Selected with `USE_SIM_TIME` | `togo_navigation/config/nav2_slam_params.yaml` |
 
 `run_live_seyond_slam_integrated.sh` is the older RKO-LIO simulation path. It
 is retained for comparison but is not the current Husky/Seyond default.
@@ -37,3 +38,8 @@ is retained for comparison but is not the current Husky/Seyond default.
 
 The root `/scripts` copies are Docker compatibility wrappers. Edit the scripts
 under `lidarslam_ros2/scripts/togo/`.
+
+Hazards now run in a worker thread inside `graph_based_slam`. Configure them in
+`graph_based_slam.ros__parameters.hazard/*` in `seyond_dlio_graph.yaml`.
+See [backend hazard mapping](../../graph_based_slam/hazard/README.md) for the
+algorithm, inflation margins, diagnostics, and rebuild instructions.

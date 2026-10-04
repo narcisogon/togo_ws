@@ -1,0 +1,4 @@
+interface:
+  display_name: "Togo SLAM"
+  short_description: "Togo SLAM, TF, sensor timing, and Nav2 workflows"
+  default_prompt: "Use $togo-slam to diagnose or improve this rover's SLAM and navigation using the current WSL/Docker setup."

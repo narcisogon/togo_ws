@@ -111,6 +111,22 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
   ament_lint_auto_find_test_dependencies()
+  ament_add_gtest(test_hazard_mapping
+    test/test_hazard_mapping.cpp test/test_hazard_blockage.cpp hazard/hazard_mapping.cpp)
+  if(TARGET test_hazard_mapping)
+    target_include_directories(test_hazard_mapping PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR} ${EIGEN3_INCLUDE_DIR})
+  endif()
+  ament_add_gtest(test_hazard_worker
+    test/test_hazard_worker.cpp test/test_hazard_worker_blockage.cpp
+    hazard/hazard_worker.cpp hazard/hazard_mapping.cpp)
+  if(TARGET test_hazard_worker)
+    target_include_directories(test_hazard_worker PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR} ${EIGEN3_INCLUDE_DIR} ${PCL_INCLUDE_DIRS})
+    ament_target_dependencies(test_hazard_worker rclcpp sensor_msgs nav_msgs std_msgs pcl_conversions tf2_ros)
+    target_link_libraries(test_hazard_worker ${PCL_LIBRARIES})
+    set_tests_properties(test_hazard_worker PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=199;ROS_LOCALHOST_ONLY=1")
+  endif()
   ament_add_gtest(
     test_gnss_weighting
     test/test_gnss_weighting.cpp
@@ -485,6 +501,8 @@ if(BUILD_TESTING)
 endif()
 
 add_library(graph_based_slam_component SHARED
+  hazard/hazard_mapping.cpp
+  hazard/hazard_worker.cpp
   src/graph_based_slam_component.cpp
   src/graph_based_slam_workers.cpp
   src/graph_based_slam_loop_closure.cpp
@@ -534,6 +552,7 @@ ament_target_dependencies(graph_based_slam_node
   rclcpp)
 
 include_directories(
+  ${CMAKE_CURRENT_SOURCE_DIR}
   include
   ${PCL_INCLUDE_DIRS}
 )

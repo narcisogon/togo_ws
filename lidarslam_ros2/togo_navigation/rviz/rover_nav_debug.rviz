@@ -17,35 +17,54 @@ Visualization Manager:
       Topic:
         Value: /local_costmap/costmap
     - Class: rviz_default_plugins/Map
-      Enabled: false
-      Name: SLAM Occupancy Grid
+      Enabled: true
+      Color Scheme: costmap
+      Name: Backend Navigation Costs
       Topic:
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
         Value: /map
     - Class: rviz_default_plugins/Map
       Enabled: false
-      Name: Local Hazard Map
+      Name: Backend Hazards Before Inflation
       Topic:
-        Value: /local_hazard_map
+        Value: /hazard/raw
     - Class: rviz_default_plugins/PointCloud2
       Enabled: true
-      Name: SLAM Map Occupied Cells
+      Name: Terrain Slope Degrees
+      Color Transformer: Intensity
+      Channel Name: intensity
       Topic:
-        Value: /map_debug_points
+        Value: /hazard/slope
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: false
+      Name: Temporary Obstacle Confidence
+      Color Transformer: Intensity
+      Channel Name: intensity
+      Autocompute Intensity Bounds: false
+      Min Intensity: 0
+      Max Intensity: 100
+      Min Color: 0; 255; 0
+      Max Color: 255; 0; 0
+      Use rainbow: false
+      Decay Time: 0
+      Position Transformer: XYZ
+      Size (m): 0.08
+      Style: Flat Squares
+      Topic:
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+        Value: /hazard/obstacles
     - Class: rviz_default_plugins/PointCloud2
       Enabled: true
-      Name: Global Costmap Occupied Cells
+      Name: Filtered Cloud
       Topic:
-        Value: /global_costmap/debug_points
-    - Class: rviz_default_plugins/PointCloud2
-      Enabled: true
-      Name: Local Hazard Occupied Cells
-      Topic:
-        Value: /local_hazard_debug_points
+        Value: /hazard/normalized_cloud
     - Class: rviz_default_plugins/PointCloud2
       Enabled: true
       Name: Backend Modified Map
       Topic:
-        Value: /modified_map
+        Value: /modified_map_timed
     - Class: rviz_default_plugins/PointCloud2
       Enabled: true
       Name: Registered LiDAR
@@ -60,7 +79,7 @@ Visualization Manager:
       Enabled: true
       Name: DLIO Path
       Topic:
-        Value: /dlio/path
+        Value: /dlio/path_simple
     - Class: rviz_default_plugins/Path
       Enabled: true
       Name: Backend Path
@@ -94,10 +113,8 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        # goal_safety_relay subscribes here, checks the goal against the
-        # live global costmap, relocates it to the nearest safe cell if
-        # it lands on/near a hazard, and only then calls NavigateToPose --
-        # so nothing downstream ever receives an unsafe goal directly.
+        # The relay checks this exact position against the backend map.
+        # Valid goals are forwarded unchanged to Nav2.
         Value: /goal_pose_requested
     - Class: rviz_default_plugins/PublishPoint
       Single click: true

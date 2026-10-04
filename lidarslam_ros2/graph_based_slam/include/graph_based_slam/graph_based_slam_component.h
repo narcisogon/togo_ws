@@ -133,6 +133,7 @@ extern "C" {
 
 namespace graphslam
 {
+namespace hazard {class Worker;}
   namespace optimization
   {
     class PoseGraphOptimizer;
@@ -256,6 +257,7 @@ public:
     void requestShutdown();
 
 private:
+    std::unique_ptr<hazard::Worker> hazard_mapping_;
     std::mutex mtx_;
 
     rclcpp::Clock clock_;

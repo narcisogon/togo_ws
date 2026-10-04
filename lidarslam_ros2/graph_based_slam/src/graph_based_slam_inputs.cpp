@@ -35,6 +35,7 @@ turns synchronized odometry plus point clouds into new graph submaps.
 */
 
 #include "graph_based_slam/graph_based_slam_component.h"
+#include "hazard/hazard_worker.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -431,6 +432,7 @@ void GraphBasedSlamComponent::receiveCloud(const sensor_msgs::msg::PointCloud2::
   }
   latest_cloud_ = msg;
   latest_cloud_stamp_ = rclcpp::Time(msg->header.stamp);
+  if (hazard_mapping_) {hazard_mapping_->receiveCloud(msg);}
   // When cloud arrives, try to create submap with latest odom
   tryCreateSubmap();
 }
@@ -452,7 +454,10 @@ void GraphBasedSlamComponent::receiveOdometry(const nav_msgs::msg::Odometry & ms
   }
   latest_odom_ = msg;
   latest_odom_valid_ = true;
+  if (hazard_mapping_) {hazard_mapping_->receiveOdometry(msg);}
   publishMapToOdomTf(rclcpp::Time(msg.header.stamp));
+  // A cloud may precede the bracketing odometry sample on DDS.
+  if (hazard_mapping_ && hazard_mapping_->enabled()) {tryCreateSubmap();}
 }
 
 /*
@@ -464,10 +469,18 @@ void GraphBasedSlamComponent::tryCreateSubmap()
 {
   if (!latest_odom_valid_ || !latest_cloud_) {return;}
 
+  auto acquisition_odom = latest_odom_;
+  if (hazard_mapping_ && hazard_mapping_->enabled()) {
+    const auto pose = hazard_mapping_->acquisitionPose(latest_cloud_stamp_.nanoseconds());
+    if (!pose) {return;}
+    acquisition_odom.pose.pose = tf2::toMsg(*pose);
+    acquisition_odom.header.stamp = latest_cloud_->header.stamp;
+  }
+
   Eigen::Vector3d pos(
-    latest_odom_.pose.pose.position.x,
-    latest_odom_.pose.pose.position.y,
-    latest_odom_.pose.pose.position.z);
+    acquisition_odom.pose.pose.position.x,
+    acquisition_odom.pose.pose.position.y,
+    acquisition_odom.pose.pose.position.z);
 
   // Check distance threshold
   if (last_submap_position_valid_) {
@@ -482,10 +495,10 @@ void GraphBasedSlamComponent::tryCreateSubmap()
   // The pose is frontend odom at submap time. Pose graph optimization later
   // turns the optimized latest submap pose into a map->odom correction.
   lidarslam_msgs::msg::SubMap submap;
-  submap.header.stamp = latest_odom_.header.stamp;
+  submap.header.stamp = acquisition_odom.header.stamp;
   submap.header.frame_id = global_frame_id_;
   submap.distance = accumulated_distance_;
-  submap.pose = latest_odom_.pose.pose;
+  submap.pose = acquisition_odom.pose.pose;
   if (odom_input_cloud_in_odom_frame_) {
     static bool warned_odom_cloud_conversion = false;
     if (debug_flag_ && !warned_odom_cloud_conversion) {
@@ -501,7 +514,7 @@ void GraphBasedSlamComponent::tryCreateSubmap()
     pcl::fromROSMsg(*latest_cloud_, *odom_cloud);
 
     Eigen::Affine3d odom_affine;
-    tf2::fromMsg(latest_odom_.pose.pose, odom_affine);
+    tf2::fromMsg(acquisition_odom.pose.pose, odom_affine);
     pcl::transformPointCloud(
       *odom_cloud,
       *local_cloud,

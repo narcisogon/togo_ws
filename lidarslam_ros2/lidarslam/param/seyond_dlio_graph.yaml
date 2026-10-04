@@ -226,6 +226,54 @@ dlio_map_node:
 # ─────────────────────────────────────────────────────────────────────────────
 graph_based_slam:
   ros__parameters:
+    # Hazard mapping: one worker inside this backend, publishing the final /map.
+    # Heights are relative to the acquisition body origin ALONG GRAVITY, not
+    # tilted body Z. Slope is relative to gravity even when the rover is pitched.
+    hazard/enabled: true
+    hazard/input_min_height_m: -3.0
+    hazard/input_max_height_m: 2.0
+    hazard/max_range_m: 12.0
+    hazard/resolution_m: 0.05
+    # Planning cost for unknown cells: -1 keeps unknown; 0 free; 1..99 soft; 100 blocked.
+    # Raw evidence stays unknown. Numeric costs combine with inflation using max.
+    hazard/unknown_cost: -1
+    hazard/slope_radius_m: 0.40
+    hazard/max_slope_deg: 14.0
+    # Extra clearance OUTSIDE the conservative circumscribed rover footprint.
+    # Soft radius is the total outer radius, not an additional band width.
+    # <= lethal:100; between radii:99->0 linearly; overlaps use max, not sum.
+    hazard/lethal_inflation_m: 0.15
+    hazard/soft_inflation_m: 0.60
+    #hazard/footprint: [0.55, 0.38, 0.55, -0.38, -0.55, -0.38, -0.55, 0.38]
+    hazard/footprint: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    # Support, scheduling and resource limits (not additional hazard rules).
+    hazard/min_points_per_cell: 1  # Keep sparse returns; confidence/plane support qualifies them.
+    hazard/min_plane_neighbors: 6
+    hazard/terrain_percentile: 0.25
+    hazard/height_noise_m: 0.01       # Baseline height uncertainty; grows with range, bounded density benefit.
+    hazard/min_plane_coverage: 0.20  # Minor spatial spread / support radius; rejects clustered/line-like support.
+    hazard/max_plane_error_m: 0.05   # Maximum fitted surface RMS error.
+    hazard/clear_confirmations: 3    # Reliable batches to replace a height mode / clear a confirmed hazard.
+    hazard/clear_slope_margin_deg: 3.0  # Clear below slope limit minus this margin, including uncertainty.
+    # Temporary obstacles above retained ground. Heights are along corrected gravity.
+    hazard/obstacle_min_height_m: 0.10
+    hazard/obstacle_max_height_m: 1.80
+    hazard/lidar_frame: lidar3d_0_laser  # Ray origin comes from base-to-LiDAR TF; restart to change.
+    # Advanced occupancy support and bounded evidence; one vote per fresh batch/voxel.
+    hazard/obstacle_voxel_height_m: 0.10
+    hazard/obstacle_min_points: 3
+    hazard/obstacle_hit_probability: 0.85
+    hazard/obstacle_miss_probability: 0.25
+    hazard/obstacle_mark_probability: 0.70
+    hazard/obstacle_clear_probability: 0.30
+    hazard/obstacle_max_probability: 0.90
+    hazard/max_rays: 3000
+    hazard/max_obstacle_voxels: 200000
+    hazard/batch_clouds: 3        # Process this many fresh scans, or the wait limit below.
+    hazard/update_period_sec: 0.20  # Maximum wait for a partial batch (wall seconds).
+    hazard/max_input_age_sec: 1.0
+    hazard/max_cells: 4000000
+
 
     # ── Backend ──────────────────────────────────────────────────────────────
     optimizer_backend: gtsam_isam2   # Solver. Options: gtsam_isam2|isam2 (incremental, retains state) | gtsam (full batch re-solve). Unknown → WARN + fallback. [def: gtsam_isam2]

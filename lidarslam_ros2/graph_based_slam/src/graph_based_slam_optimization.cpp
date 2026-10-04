@@ -40,6 +40,7 @@ iSAM2 session and cached assembled outputs are never updated concurrently.
 */
 
 #include "graph_based_slam/graph_based_slam_component.h"
+#include "hazard/hazard_worker.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -786,6 +787,29 @@ void GraphBasedSlamComponent::doPoseAdjustment(
   const bool map_array_published =
     !append_only || do_save_map || publish_modified_map_array_on_append_;
 
+  // Invalidate hazard health before exposing a changed map-to-odom transform.
+  if (hazard_mapping_ && hazard_mapping_->enabled() && submaps_size > 0) {
+    std::vector<hazard::Source> sources;
+    sources.reserve(static_cast<std::size_t>(submaps_size));
+    for (int i = 0; i < submaps_size; ++i) {
+      hazard::Source source;
+      source.stamp = rclcpp::Time(map_array_msg.submaps[static_cast<std::size_t>(i)].header.stamp).nanoseconds();
+      source.id = i;
+      source.pose = optimized_poses[static_cast<std::size_t>(i)];
+      source.up_in_body = raw_poses[static_cast<std::size_t>(i)].linear().transpose() *
+        Eigen::Vector3d::UnitZ();
+      if (use_pcd_cache_) {
+        source.pcd_path = pcd_cache_dir_ + "/submap_" + std::to_string(i) + ".pcd";
+      } else {
+        source.cloud = std::make_shared<const sensor_msgs::msg::PointCloud2>(
+          map_array_msg.submaps[static_cast<std::size_t>(i)].cloud);
+      }
+      sources.push_back(std::move(source));
+    }
+    hazard_mapping_->updateGraph(std::move(sources),
+      optimized_poses.back() * raw_poses.back().inverse());
+  }
+
   auto publish_stage_start = std::chrono::steady_clock::now();
   if (use_odom_input_ && publish_map_to_odom_tf_ && submaps_size > 0) {
     updateMapToOdomCorrection(
@@ -794,6 +818,7 @@ void GraphBasedSlamComponent::doPoseAdjustment(
     publishMapToOdomTf(this->now());
   }
   map_to_odom_tf_ms = elapsedMillis(publish_stage_start);
+
 
   if (map_array_published) {
     publish_stage_start = std::chrono::steady_clock::now();
