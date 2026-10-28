@@ -1,0 +1,78 @@
+--- a/bullet/src/Base.hh
++++ b/bullet/src/Base.hh
+@@ -271,6 +271,14 @@
+   public: std::unordered_map<std::size_t, LinkInfoPtr> links;
+   public: std::unordered_map<std::size_t, CollisionInfoPtr> collisions;
+   public: std::unordered_map<std::size_t, JointInfoPtr> joints;
++
++  /// \brief [lunar patch] mesh friction: SDF <surface><friction><ode> (mu, mu2)
++  /// of MESH collisions, keyed by (link id, collision name). Recorded by
++  /// ConstructSdfCollision (which cannot build mesh shapes: gz-sim attaches them
++  /// later through AttachMeshShape, without the SDF) and applied by
++  /// AttachMeshShape to the link's rigid body.
++  public: std::map<std::pair<std::size_t, std::string>,
++                   std::pair<btScalar, btScalar>> meshFriction;
+ };
+ 
+ }  // namespace bullet
+--- a/bullet/src/SDFFeatures.cc
++++ b/bullet/src/SDFFeatures.cc
+@@ -283,6 +283,14 @@
+   const auto mu = odeFriction->Get<btScalar>("mu");
+   const auto mu2 = odeFriction->Get<btScalar>("mu2");
+ 
++  // [lunar patch] mesh friction: mesh shapes are attached later by gz-sim through
++  // AttachMeshShape (no SDF there); remember this collision's friction for it.
++  if (shape == nullptr && geom->MeshShape() != nullptr)
++  {
++    this->meshFriction[{static_cast<std::size_t>(_linkID), _collision.Name()}] =
++      {mu, mu2};
++  }
++
+   // Restitution coefficient not tested
+   // const auto restitution = surfaceElement->GetElement("bounce")
+   //                             ->Get<btScalar>("restitution_coefficient");
+--- a/bullet/src/ShapeFeatures.cc
++++ b/bullet/src/ShapeFeatures.cc
+@@ -18,6 +18,7 @@
+ #include "ShapeFeatures.hh"
+ #include <BulletCollision/Gimpact/btGImpactShape.h>
+ 
++#include <cmath>
+ #include <memory>
+ 
+ namespace gz {
+@@ -81,6 +82,33 @@
+   const auto &modelID = linkInfo->model;
+   const auto &body = linkInfo->link.get();
+ 
++  // [lunar patch] mesh friction: honour the SDF <ode><mu>/<mu2> recorded by
++  // ConstructSdfCollision. Isotropic friction is the body's scalar friction
++  // (effective coefficient = mu * mu_other on any slope); anisotropic friction
++  // mirrors the primitives (setFriction(1) + anisotropic (mu, mu2, 1)).
++  {
++    const auto fit = this->meshFriction.find(
++      {static_cast<std::size_t>(_linkID), _name});
++    if (fit != this->meshFriction.end())
++    {
++      const btScalar mu = fit->second.first;
++      const btScalar mu2 = fit->second.second;
++      if (std::fabs(mu - mu2) <= btScalar(1e-6))
++      {
++        body->setFriction(mu);
++        body->setAnisotropicFriction(btVector3(1, 1, 1));
++      }
++      else
++      {
++        body->setFriction(1);
++        body->setAnisotropicFriction(btVector3(mu, mu2, 1),
++          btCollisionObject::CF_ANISOTROPIC_FRICTION);
++      }
++      gzmsg << "[lunar patch] mesh collision [" << _name << "]: friction mu "
++            << mu << ", mu2 " << mu2 << std::endl;
++    }
++  }
++
+   auto poseWithInertia =
+     linkInfo->inertialPose.Inverse() * gz::math::eigen3::convert(_pose);
+   const auto poseIsometry = gz::math::eigen3::convert(poseWithInertia);

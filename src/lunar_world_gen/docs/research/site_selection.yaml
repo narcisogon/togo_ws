@@ -1,0 +1,231 @@
+# Apollo 16 LROC NAC DTM analysis and site selection for the TOGO lunar world.
+# Produced by the "site" research task (2026-10-25). Method, evidence and figures: site_selection.md.
+# Scratch scripts / previews: /home/nargon/togo_assets/lunar/experiments/site/ (s01..s21 *.py, p01..p17 *.png).
+#
+# Conventions
+#   lat/lon: planetocentric degrees, Mean Earth / Polar Axis (ME) frame, east-positive longitude.
+#   h: metres above the reference sphere R = 1737400 m (the DTM's height reference).
+#   proj x/y: DTM map coordinates (Equidistant Cylindrical, see `projection`).
+#   pixel col/row: GDAL corner convention (pixel (c, r) spans [c, c+1) x [r, r+1); its centre is
+#     (c + 0.5, r + 0.5); integer array index = floor). Row 0 is the NORTH edge of the DTM.
+#   Local frame: ENU tangent plane at the core centre: x = east, y = north, z = up,
+#     z = (R + h) * R / sqrt(R^2 + d^2) - (R + href)  (gnomonic mapping, Moon curvature included).
+#   tools/dtm_extract.py reads `core` / `rocky_alternative` (centre.lat_deg/lon_deg, href_m, yaw_deg, size_m).
+version: 1
+
+dtm:
+  product_id: NAC_DTM_APOLLO16
+  product_version: v1.9            # PDS label PRODUCT_VERSION_ID, created 2020-10-13
+  file: src/togo/togo_gz/media/dem/NAC_DTM_APOLLO16.TIF
+  filled_file: src/togo/togo_gz/media/dem/NAC_DTM_APOLLO16_filled.tif
+  size_px: [11985, 15653]          # cols (E-W), rows (N-S)
+  posting_m: 2.0
+  dtype: float32
+  nodata: -3.4028226550889045e+38
+  height_reference: "sphere R = 1737400 m"
+  source: "6 LROC NAC stereo pairs (12 images, 2010-02-02 .. 2011-07-19), ISIS 3 + SOCET SET 5.5 (NGATE), 6 sub-DTMs mosaicked"
+  producer_accuracy:
+    relative_linear_error_90pct_m: 0.88   # LROC RDR page 'Relative LE' (SOCET SET, 90 % confidence)
+    lola_rms_m: 1.02                      # RMS vs LOLA tracks
+  nodata_fraction: {full_file: 0.0921, filled_file: 0.0693, within_5km_of_LM: 0.0, within_8km_of_LM: 0.0001, within_10km_of_LM: 0.0113}
+  filled_vs_original: "bit-identical on all valid pixels; the _filled file only fills 4.27 M interior pixels (2.3 % of the grid); none within 8 km of the LM"
+  other_files:
+    NAC_DTM_APOLLO16_2049.tif: "UInt16 Gazebo heightmap of a 4098 m window centred on the DTM centre (not the LM): h = 0.014331*DN - 168.284 m (1.43 cm quantum -> terraces); do not use"
+    NAC_DTM_APOLLO16_slipmap.tif: "NOT a slip map: 8-bit scaled height of the same 4098 m window (corr 1.000 with h, ~3.7 m per DN); do not use"
+    slipmap-2048.tif: "RGB binary rock/obstacle mask (blue discs), 80 x 80 m at 3.9 cm/px, stereographic projection centred on the LROC LM position; not used"
+
+projection:
+  crs_proj4: "+proj=eqc +lat_ts=-9 +lat_0=0 +lon_0=180 +x_0=0 +y_0=0 +R=1737400 +units=m +no_defs"
+  name: "Equidistant Cylindrical (Equirectangular), spherical"
+  sphere_radius_m: 1737400.0
+  standard_parallel_deg: -9.0      # lat_ts
+  central_meridian_deg: 180.0      # lon_0
+  false_easting_m: 0.0
+  false_northing_m: 0.0
+  K_m_per_rad: 1716009.7229499924  # R * cos(lat_ts)
+  geotransform: {X0: -4937550.000001500360668, DX: 2.000000000000600, Y0: -261204.000000080006430, DY: -2.000000000000600}
+  pds_label: {MAP_SCALE_m: 2.0000000000006, MAP_RESOLUTION_pix_per_deg: 15161.67521207, SAMPLE_PROJECTION_OFFSET: 2468774.5, LINE_PROJECTION_OFFSET: -130602.5}
+  formulas:
+    ll_to_xy: "x = K * radians(wrap180(lon - 180)); y = R * radians(lat)"
+    xy_to_ll: "lon = wrap180(degrees(x / K) + 180); lat = degrees(y / R)"
+    xy_to_px: "col = (x - X0) / DX; row = (y - Y0) / DY"
+    px_to_xy: "x = X0 + col * DX; y = Y0 + row * DY"
+    pds_sample_line: "sample(1-based centre) = x / MAP_SCALE + SAMPLE_PROJECTION_OFFSET + 1 = col + 0.5; line = LINE_PROJECTION_OFFSET + 1 - y / MAP_SCALE = row + 0.5"
+  extent: {lat_deg: [-9.6463615, -8.6139558], lon_deg: [15.1403420, 15.9406753]}
+  scale_factors_at_core: {east_west_true_over_projected: 1.0000734, north_south: 1.0, grid_convergence_deg: 0.0}
+  verification: "closed form == pyproj to 0.0 m; corners == gdalinfo; DTM h at the LROC LM = 7.79 m vs LROC table 8 +- 3 m (dtm_extract.py --selftest)"
+
+landing_site:
+  lm:
+    source: "LROC 2016 table / Wagner et al. 2017, Icarus 283, 92-103 (ME frame, mean of several NAC images)"
+    lat_deg: -8.9734
+    lon_deg: 15.5011
+    elevation_lroc_m: 8          # +- 3.0 m
+    proj_x_m: -4926745.289
+    proj_y_m: -272103.553
+    pixel_col: 5402.355
+    pixel_row: 5449.776
+    dtm_h_m: 7.79
+    enu_in_core_frame_m: [-300.30, 1.45, -0.43]   # z relative to the core href 8.1955 m (curvature included)
+    dtm_note: "the DTM (2 m) cannot resolve the LM descent stage (~4 m)"
+  lm_davies_colvin_2000: {lat_deg: -8.97301, lon_deg: 15.50019, offset_from_lroc_m: 29.7, note: "older (ALSJ) value; 27.3 m W and 11.8 m N of the LROC position"}
+  alsep: {lat_deg: -8.9759, lon_deg: 15.4986, pixel_col: 5364.918, pixel_row: 5487.681, dtm_h_m: 11.90, enu_in_core_frame_m: [-375.18, -74.36, 3.66]}
+  lrv_final: {lat_deg: -8.9729, lon_deg: 15.5037, pixel_col: 5441.290, pixel_row: 5442.196, dtm_h_m: 9.42, enu_in_core_frame_m: [-222.43, 16.62, 1.22]}
+  north_ray: {lat_deg: -8.811988, lon_deg: 15.484282, pixel_col: 5150.5, pixel_row: 3002.5, floor_h_m: -164.1, rim_crest_radius_m: 517, rim_h_median_m: 81.1, depth_m: 245, from_LM_m: [-504, 4895], enu_in_core_frame_m: [-804.3, 4895.5, -179.3], gazetteer: [-8.82, 15.48, "D 0.95-1.0 km"]}
+  south_ray: {lat_deg: -9.148890, lon_deg: 15.381844, pixel_col: 3616.5, pixel_row: 8110.5, floor_h_m: -110.7, rim_h_p90_m: 28.3, depth_m: 139, from_LM_m: [-3572, -5321], enu_in_core_frame_m: [-3870.2, -5320.4, -121.7], gazetteer: [-9.15, 15.38, "D 0.70 km"]}
+  stone_mountain_horizon: {azimuth_ccw_from_east_deg: 282, elevation_deg: 5.58, distance_m: 5554, note: "highest horizon seen from 0.5 m above the core centre (S-SSE)"}
+
+core:
+  name: "F1: west half of a degraded ~180 m bowl, 300 m east of the LM"
+  centre:
+    lat_deg: -8.973448
+    lon_deg: 15.511126
+    proj_x_m: -4926445.010
+    proj_y_m: -272105.008
+    pixel_col: 5552.4948          # = centre of DTM pixel (5552, 5450)
+    pixel_row: 5450.5041
+  offset_from_LM_m: {east: 300.30, north: -1.46, distance: 300.30}
+  yaw_deg: 0.0                    # x = east, y = north (DTM grid is aligned with E/N here)
+  size_m: [100, 100]
+  tile_size_m: 10                 # 10 x 10 tiles
+  href_m: 8.1955                  # area mean of the band-limited DTM over the 100 m square -> core area-mean z = -0.0005 m (curvature)
+  href_definition: "area mean (midpoint rule, 200 x 200) of h over the 100 x 100 m core, DTM low-passed with Butterworth (lambda_c 10 m, order 4) + cubic B-spline = dtm_extract.py --site core --href auto --lowpass-lambda 10"
+  z_range_m: [-4.31, 5.88]        # band-limited DTM, relative to href
+  h_centre_m: 7.12
+  dist_to_nearest_seam_m: 958     # east strip seam
+  metrics:                        # from the 2 m DTM (50 x 50 posts)
+    slope_2m_deg: {mean: 6.14, p50: 5.91, p90: 9.43, p95: 10.47, p99: 15.84, max: 26.77, frac_gt10: 0.068, frac_gt15: 0.013, frac_gt20: 0.003, frac_gt25: 0.001}
+    slope_10m_deg: {mean: 5.87, p50: 5.92, p90: 8.86, p95: 9.62, p99: 11.96, max: 13.96, frac_gt15: 0.0}
+    largest_connected_area_le15deg: 0.987
+    relief_m: 10.20
+    detrended_std_m: 1.15
+    plane_tilt_deg: 4.16
+    craters_intersecting:         # LoG detections; e/n relative to the core centre [m]; depth = rim median - floor
+      - {D: 181, depth: 12.5, e: 56, n: 10, note: "degraded bowl; core covers its west half"}
+      - {D: 33.9, depth: 1.71, e: -56, n: -26, note: "degraded, west edge"}
+      - {D: 22.6, depth: 4.92, e: 32, n: -60, note: "fresh (d/D 0.22), south edge; steep walls, likely blocky rim"}
+      - {D: 14.1, depth: 1.30, e: -56, n: -16}
+    lidar_context:                # ray cast vs 2 m DTM: sensor 0.5 m above ground, 210 x 123 rays, 0.1-150 m, 9 poses x 3 headings
+      returns_frac: 0.554
+      upward_ray_returns_frac: 0.101
+      returns_beyond_30m_frac: 0.082
+      skyline_coverage_frac: 0.927
+      annulus_70_150m_relief_m: 16.4
+      annulus_70_150m_std_m: 3.68
+    local_artifacts: {strongest_EW_line_step_m: 0.017, strongest_NS_line_step_m: 0.012, per_pixel_step_noise_m: 0.015, verdict: "no seam or line artifact in or within 150 m of the core"}
+
+zones:                            # all centred on the core centre, axes = core ENU frame
+  core: {size_m: [100, 100], spacing_m: 0.01, source: "DTM band-limited (Butterworth 10 m) + synthetic detail", geometric_detail: "~1 cm"}
+  lidar_zone:
+    size_m: [500, 500]            # every point within 150 m (sensor range) of any core position needs <= 200 m half-width
+    spacing_m: 0.25
+    source: "DTM band-limited (Butterworth 10 m) + synthetic detail down to ~0.5 m wavelength (LiDAR beam spacing is 0.01 rad * range)"
+    triangles_full_square: {max_err_0.02m: 1935452, max_err_0.05m: 498084, max_err_0.10m: 133005}
+  far_field:
+    size_m: [2200, 2200]
+    spacing_m: 2.0
+    source: "native DTM, no low-pass, --deseam default (east strip seam at +958 m)"
+    triangles_full_square: {max_err_0.05m: 452629, max_err_0.10m: 249147, max_err_0.20m: 120880, max_err_0.50m: 37874, max_err_1.0m: 11980}
+    recommended_max_err_m: 0.2
+    curvature_drop_at_1km_m: 0.288
+  horizon:
+    size_m: [20000, 20000]
+    spacing_m: 20
+    source: "DTM block-averaged to 20 m (nodata-aware) + cubic; dtm_extract auto anti-alias"
+    nodata_frac: 0.020            # only beyond 8.9 km, azimuth 51-122 deg CCW from east (N-NE DTM edge)
+    triangles_full_square_20m: {max_err_0.5m: 508141, max_err_1m: 239371, max_err_2m: 103107, max_err_5m: 31578}
+    triangles_full_square_50m: {max_err_0.5m: 187904, max_err_1m: 116176, max_err_2m: 60149, max_err_5m: 21567}
+    recommended: {spacing_m: 20, max_err_m: 2.0}
+    curvature_drop_m: {at_5km: 7.2, at_10km: 28.8}
+    note: "flat-terrain horizon for a 0.5 m sensor is only 1.3 km away; distant terrain is visible over 26 % of azimuths (S-SSE, Stone Mountain flank at 5-9 km, up to 5.6 deg)"
+  core_tile_triangles_1cm:        # one 10 x 10 m tile at 1 cm: band-limited DTM + fBm (H 0.7) to 2 cm wavelength, no rocks/craters
+    max_err_0.002m: 553669
+    max_err_0.005m: 141638
+    max_err_0.010m: 37905
+    max_err_0.020m: 7686
+    note: "x 100 tiles for the full core"
+
+dtm_quality:
+  noise_floor:
+    white_noise_equiv_sigma_m: 0.012            # from 2nd differences (x 0.012, y 0.013)
+    highpass_robust_std_m: {sigma_2m: 0.021, sigma_4m: 0.061, sigma_8m: 0.146}
+    residual_autocorr_lag_posts_1_to_5: [0.92, 0.76, 0.59, 0.43, 0.30]   # small-scale content correlated over 3-4 posts
+    isolated_spikes_or_pits: 0                   # 1-px outliers > 0.25 m in the +-3 km window
+    terracing: "none (float32, continuous values; mod-q histogram chi2(19) 19-40 for q 0.05-1 m; 0.055 % zero steps)"
+    interpolated_flat_patches_frac: 0.0003       # 50 m blocks with < 1/3 of median small-scale roughness
+  artifacts:
+    strip_seams_NS:
+      - {name: east_strip_seam, east_of_LM_m: 1258, east_of_core_m: 958, step_median_m: 0.52, step_abs_p90_m: 0.71, step_abs_max_m: 0.91, tilt_deg: -0.5, traced_rows: [3950, 6950]}
+      - {name: west_strip_seam, east_of_LM_m: -2441, east_of_core_m: -2741, step_median_m: 0.28, step_abs_p90_m: 0.54, step_abs_max_m: 0.57, tilt_deg: 0.5, traced_rows: [3950, 6950]}
+      - {name: far_west, east_of_LM_m: -7124, step_median_m: 0.23, step_abs_max_m: 0.68, note: "full-height trace, 14/142 coherent segments"}
+      - {name: far_east, east_of_LM_m: 9061, step_median_m: 0.38, step_abs_max_m: 0.70, note: "full-height trace, 22/142 coherent segments"}
+    seam_file: docs/research/dtm_seams_apollo16.json   # per-row traces of the two seams near the LM, used by dtm_extract --deseam
+    deseam_result_far_field: {before_median_m: 0.448, before_max_m: 0.908, after_median_m: 0.039, after_p90_m: 0.284, after_max_m: 0.329}
+    ew_line_artifacts: "faint 1-px E-W lines, typically 3-5 cm coherent steps; <= 1.7 cm near the core"
+    matching_texture: "'orange-peel'/swirl texture at 10-30 m scale in 2 m slope maps (stereo-matching); 5-20 m band RMS 0.13 m in the core"
+  spectrum:
+    psd_2d_fit_20_200m: {log10_A: -5.054, slope: -3.997, hurst_equiv: 1.0, units: "P [m^2/(cyc/m)^2] = 10^log10_A * k^slope, k in cyc/m"}
+    measured_over_fit: {15m: 0.99, 13.7m: 0.89, 11.3m: 0.82, 10.3m: 0.77, 8.5m: 0.71, 7.7m: 0.67, 6.4m: 0.84, 4.8m: 0.65, 3.6m: 0.35, 3.0m: 0.05}
+    rms_slope_deg_vs_baseline: {2m: 5.2, 4m: 5.1, 10m: 4.9, 20m: 4.6, 50m: 4.2, 100m: 3.7}   # LM 2 km tile
+    local_hurst: {2-4m: 0.97, 4-6m: 0.95, 6-10m: 0.94, 10-20m: 0.93, 20-50m: 0.90, 50-100m: 0.80}
+  crater_depth_test:              # p90 of d/D (freshest craters) per diameter bin; plateau ~0.18-0.19 = fully resolved
+    p90_dD: {5-7m: 0.101, 7-9m: 0.134, 9-12m: 0.153, 12-16m: 0.166, 16-22m: 0.178, 22-30m: 0.189, 30-40m: 0.193}
+  effective_resolution_m: 9       # 8-10 m (4-5 posts): craters D >= ~16 m keep full depth, D 7-9 m keep ~70 %
+  cutoff_wavelength_m: 10         # below this, synthetic detail takes over (crossover centre, |H| = 0.707)
+  dtm_fully_trusted_above_m: 16   # Butterworth |H| >= 0.98 above 15 m
+
+resampling:
+  method: "Butterworth low-pass (order 4, lambda_c 10 m) of the float32 2 m DTM in the Fourier domain (reflect padding), then cubic B-spline interpolation (C2) to the target grid"
+  command: "tools/dtm_extract.py --site core --size 100 --spacing 0.01 --lowpass-lambda 10 --out <prefix>"
+  transfer: "H(k) = 1 / sqrt(1 + (k * 10 m)^8): 0.998 at 20 m, 0.981 at 15 m, 0.901 at 12 m, 0.707 at 10 m, 0.379 at 8 m, 0.129 at 6 m"
+  alternative_gaussian: {sigma_m: 1.9, note: "|H| 0.49 at 10 m but 0.84 at 20 m and replaces 30 % of the power at 20 m with synthetic; prefer Butterworth"}
+  avoid: ["bilinear (C0: 2 m facets/creases)", "nearest (2 m terraces)", "the UInt16 / 8-bit derived files (1.4 cm / 3.7 m quantisation)", "running the core across a strip seam"]
+
+synthetic_blend:
+  rule: "z = LP(DTM) + HP(synthetic) with power-complementary weights: |H_dtm|^2 + |H_syn|^2 = 1, H_syn(k) = (k*lambda_c)^4 / sqrt(1 + (k*lambda_c)^8)"
+  target_psd: "k < 0.1 cyc/m: 10^-5.054 * k^-3.997; k >= 0.1: P(0.1) * (k / 0.1)^-(2 + 2H)"
+  hurst_below_cutoff: 0.7         # plausible range 0.6-0.8; validate against Apollo-era cm-scale roughness
+  expected_synthetic_rms_height_m: {H0.8: 0.061, H0.7: 0.065, H0.6: 0.070}   # wavelengths 2 cm .. 100 m, Butterworth complement
+  target_total_rms_slope_deg:     # (DTM + synthetic), per baseline
+    H0.7: {0.01m: 14.8, 0.05m: 10.5, 0.10m: 8.8, 0.30m: 6.9, 1.0m: 5.4, 2.0m: 4.9}
+    H0.6: {0.01m: 22.5, 0.05m: 14.3, 0.10m: 11.3, 0.30m: 7.9, 1.0m: 5.7, 2.0m: 5.0}
+    H0.8: {0.01m: 10.3, 0.05m: 8.2, 0.10m: 7.3, 0.30m: 6.2, 1.0m: 5.2, 2.0m: 4.8}
+  discrete_features:
+    craters: "keep DTM craters with D >= 16 m; add synthetic craters only for D < 16 m with weight tapering 1 -> 0 between D 8 and 16 m"
+    crater_sfd_dtm_per_km2: {D_ge_8m: 124.4, D_ge_10m: 106.1, D_ge_12m: 74.3, D_ge_16m: 51.2, D_ge_22m: 34.4, D_ge_30m: 17.8, D_ge_40m: 12.7, D_ge_55m: 8.0}
+    crater_sfd_fit_12_55m: "N(>=D) = 3.18e3 * D^-1.50 per km^2 (LoG crater-like detections in +-3 km; a lower bound, degraded craters are missed)"
+    rocks: "all synthetic (the DTM resolves only boulders >~ 5 m, e.g. House Rock)"
+    calibration: "the fBm layer plus synthetic craters/rocks together should match target_psd; set the fBm amplitude after adding craters/rocks"
+
+rocky_alternative:
+  name: "R1: outer SE rim of North Ray crater, 74 m from the largest rim boulder (House Rock candidate)"
+  centre:
+    lat_deg: -8.822541
+    lon_deg: 15.500308
+    proj_x_m: -4926769.010
+    proj_y_m: -267529.002
+    pixel_col: 5390.4951
+    pixel_row: 3162.5012
+  offset_from_LM_m: {east: -23.7, north: 4574.6, distance: 4574.6}
+  offset_from_north_ray_centre_m: {east: 480, north: -320, radius: 577}
+  yaw_deg: 0.0
+  size_m: [100, 100]
+  href_m: 80.4583                 # area mean of the band-limited DTM over the 100 m square (same definition as core)
+  metrics:
+    slope_2m_deg: {mean: 10.9, max: 35.4, frac_gt15: 0.21, frac_gt20: 0.084, frac_gt25: 0.028}
+    slope_10m_frac_gt15: 0.11
+    relief_m: 20.2
+    lidar_context: {upward_ray_returns_frac: 0.086, skyline_coverage_frac: 0.47}
+    dtm_nodata: 0.0
+  house_rock_candidate: {lat_deg: -8.824915, lon_deg: 15.499707, dtm_positive_anomaly_m: 8.6, from_north_ray_centre_m: [462, -392], note: "largest positive 2-12 m anomaly on the SE rim; consistent with House Rock (~15-20 m boulder) but not confirmed"}
+  note: "own far field needed (4.6 km from the core); check seams there before use; South Ray ejecta (centre -9.148890, 15.381844) is the other rocky option"
+
+candidates:                       # 100 x 100 m cores within 1 km of the LM; e/n = projected metres from the LROC LM
+  selection: "hard: seam >= 200 m, 2 m slope > 15 deg <= 5 %, > 20 deg <= 1 %, 10 m slope > 15 deg <= 2 %, max 2 m slope <= 30; score: LiDAR upward returns x2 + skyline + crater 15-50 m + undulation - steepness - distance"
+  table:
+    - {id: F1, e: 300.3, n: -1.4, chosen: true, s2_mean: 6.14, s2_gt15: 0.013, s2_max: 26.8, s10_max: 14.0, relief: 10.2, craters: [181, 33.9, 22.6, 14.1], lidar_up: 0.101, skyline: 0.927}
+    - {id: F2, e: -59.7, n: 258.6, s2_mean: 5.18, s2_gt15: 0.004, s2_max: 19.0, s10_max: 13.6, relief: 8.6, craters: [113, 28.3, 17.0, 8.5], lidar_up: 0.061, skyline: 0.841}
+    - {id: F3, e: 60.3, n: -41.4, s2_mean: 4.34, s2_gt15: 0.007, s2_max: 23.3, s10_max: 13.9, relief: 6.2, craters: [181, 28.3, 17.0], lidar_up: 0.060, skyline: 0.836}
+    - {id: F4, e: 0.3, n: -361.4, s2_mean: 5.30, s2_gt15: 0.012, s2_max: 21.9, s10_max: 16.2, relief: 6.9, craters: [147, 22.6, 17.0], lidar_up: 0.074, skyline: 0.809}
+    - {id: F5, e: -279.7, n: -801.4, s2_mean: 4.37, s2_gt15: 0.0, s2_max: 12.9, s10_max: 9.6, relief: 4.8, craters: [17.0, 17.0, 11.3, 8.5], lidar_up: 0.064, skyline: 0.966}
+    - {id: LM, e: 0.0, n: 0.0, s2_mean: 4.20, s2_gt15: 0.008, s2_max: 23.3, s10_max: 13.9, relief: 7.1, craters: [181, 17.0], lidar_up: 0.059, skyline: 0.799}

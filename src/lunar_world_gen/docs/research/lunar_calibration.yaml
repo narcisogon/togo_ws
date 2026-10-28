@@ -1,0 +1,498 @@
+# Lunar surface calibration parameters, Apollo 16 LM site (Cayley plains) and rocky variant.
+# Companion to lunar_calibration.md (same folder); section numbers refer to that report.
+# Produced by the science agent, 2026-10-25.
+#
+# Conventions:
+#   value       recommended value
+#   range       plausible range [low, high]
+#   units       SI unless stated; D = rock or crater diameter in metres
+#   source      keys into the `sources` section at the bottom
+#   confidence  H / M / L
+#   basis       read      = number read in the source
+#               snippet   = number from a secondary summary or abstract
+#               recalled  = standard value from memory, not re-read
+#               measured  = computed here from the DTM or a model
+#               derived   = synthesis or extrapolation
+#   valid_for   size or scale range where the value applies; outside it the value is an extrapolation
+
+meta:
+  schema_version: 1
+  date: "2026-10-25"
+  site_name: "Apollo 16 LM (Orion), Descartes / Cayley plains"
+  rocky_variant_name: "North Ray crater rim crest (Apollo 16 station 11)"
+  frame_note: "World frame recommended: local ENU at the LM (x east, y north, z up); azimuths measured from north through east."
+  scripts_dir: "/home/nargon/togo_assets/lunar/experiments/science"
+
+site:
+  lm_lat_deg: {value: -8.9734, units: deg, range: [-8.97345, -8.97335], source: [wagner2017, nssdc_sites], confidence: H, basis: read, note: "planetocentric, Mean-Earth/Polar-Axis (DE421); LROC 2016 table lists 3.0 m uncertainty (snippet)"}
+  lm_lon_deg: {value: 15.5011, units: deg_east, range: [15.50105, 15.50115], source: [wagner2017, nssdc_sites], confidence: H, basis: read}
+  alsep_lat_lon_deg: {value: [-8.9759, 15.4986], units: deg, source: [nssdc_sites], confidence: H, basis: read}
+  lm_elevation_dtm_m: {value: 8.4, units: m, range: [7.4, 9.4], source: [this_work_dtm], confidence: M, basis: measured, note: "median 5x5 px of NAC_DTM_APOLLO16.TIF; LROC DTM heights are relative to the 1737.4 km sphere; relative heights are accurate to about 1 m"}
+  lm_radius_m: {value: 1737408.4, units: m, source: [this_work_dtm], confidence: M, basis: measured}
+  lm_dtm_pixel_row_col: {value: [5449.8, 5402.4], units: px, source: [this_work_dtm], confidence: H, basis: measured}
+  dtm:
+    file: "REPO/src/togo/togo_gz/media/dem/NAC_DTM_APOLLO16.TIF"
+    projection: "Equidistant cylindrical, sphere R=1737400 m, standard parallel -9 deg, central meridian 180 deg (eastings negative)"
+    post_spacing_m: {value: 2.0, source: [lroc_dtm_readme], confidence: H, basis: read}
+    effective_resolution_m: {value: 5.5, range: [4, 8], source: [this_work_dtm], confidence: M, basis: derived, note: "deviogram H of 0.93-0.96 at 2-10 m lags indicates smoothing"}
+    precision_error_m: {value: 0.88, source: [lroc_dtm_readme], confidence: H, basis: read}
+    rms_vs_lola_m: {value: 1.02, source: [lroc_dtm_readme], confidence: H, basis: read, note: "35 LOLA tracks"}
+    known_artifacts: "boxes (0.5-1 m steps), stereo-model seams (up to 1 m), faceted interpolated areas in bland or shadowed terrain"
+    scale_error_at_lm_percent: {value: 0.007, source: [this_work_dtm], confidence: H, basis: measured}
+  local_relief_m:
+    within_400m_of_lm: {value: 25, units: m, source: [schaber1981], confidence: H, basis: read}
+    dtm_box_100m: {value: 7.3, units: m, source: [this_work_dtm], confidence: H, basis: measured}
+    dtm_box_500m: {value: 28, units: m, source: [this_work_dtm], confidence: H, basis: measured}
+    dtm_box_1km: {value: 54, units: m, source: [this_work_dtm], confidence: H, basis: measured}
+    dtm_box_2km: {value: 118, units: m, source: [this_work_dtm], confidence: H, basis: measured}
+  geology:
+    unit: "Cayley plains (impact breccias, no volcanics); brecciated debris unit beneath the regolith"
+    regolith_thickness_m: {value: 7, range: [3.1, 15], source: [freeman1981], confidence: H, basis: read, note: "median 6-10 m from benches in 10 concentric craters; 12.2 m on the ALSEP active-seismic line; WC crater: 6.7 m"}
+    regolith_thickness_alsep_seismic_m: {value: 12.2, source: [freeman1981, schaber1981], confidence: H, basis: read}
+    south_ray_ray_material_at_lm: "LM at the edge of discontinuous South Ray ray material; LM-area rocks perched or slightly buried, many glass-coated, probably South Ray ejecta (2 Ma)"
+    south_ray_ejecta_thickness_traverse: {value: "<=1 cm (southern stations), <1 mm (stations 11/13)", source: [ulrich1981g], confidence: M, basis: read}
+    subsurface_light_soil_depth_cm: {value: 2, range: [1, 3], source: [freeman1981, holt1981], confidence: M, basis: read, note: "lighter soil under a darker grey surface layer at stations 1, 2, 4a, 5, 11, 13"}
+  craters_named:
+    north_ray: {center_lat_lon_deg: [-8.8121, 15.4844], rim_diameter_m: 1050, depth_m: 233, d_over_D: 0.22, age_Ma: 50, age_range_Ma: [30, 60], distance_from_lm_m: 4917, largest_blocks_m: 25, source: [this_work_dtm, ulrich1981], confidence: H, basis: "measured (geometry) / read (age, blocks)"}
+    south_ray: {center_lat_lon_deg: [-9.1474, 15.3826], rim_diameter_m: 690, depth_m: 127, d_over_D: 0.185, rim_height_m: 24, age_Ma: 2, age_range_Ma: [2, 4], distance_from_lm_m: 6360, source: [this_work_dtm, ulrich1981g, holt1981], confidence: H, basis: "measured / read (lit.: 680 m, 135 m deep, 20-22 m rim, 6.2 km)"}
+    wc_crater: {diameter_m: 40, position: "about 700 m S of LM", block_cover_fraction: 0.16, regolith_thickness_m: 6.7, source: [ulrich1981g, freeman1981], confidence: M, basis: read}
+    buster: {diameter_m: 90, position: "about 850 m W of LM (station 2)", note: "floor 90 % covered by blocky debris, blocks up to 5 m, angular", source: [schaber1981], confidence: H, basis: read}
+  slopes_dtm_lm_1km_box:   # not detrended; includes regional tilt
+    basis: measured
+    source: [this_work_dtm]
+    confidence: M
+    note: "values at baselines < 6 m are lower bounds because the DTM is smoothed"
+    baseline_m:            [2,     4,     6,     10,    20,    50,    100]
+    directional_rms_deg:   [3.87,  3.80,  3.73,  3.60,  3.36,  2.99,  2.70]
+    gradient_median_deg:   [4.08,  4.07,  4.06,  4.01,  3.89,  3.67,  3.37]
+    gradient_mean_deg:     [4.54,  4.50,  4.46,  4.35,  4.14,  3.79,  3.43]
+    gradient_p90_deg:      [7.68,  7.59,  7.49,  7.28,  6.81,  6.17,  5.49]
+    gradient_p99_deg:      [15.27, 14.69, 14.23, 13.15, 11.27, 9.40,  7.85]
+    frac_gt_10deg:         [0.037, 0.035, 0.032, 0.026, 0.017, 0.004, 0.0]
+    frac_gt_15deg:         [0.011, 0.009, 0.009, 0.007, 0.004, 0.0,   0.0]
+    frac_gt_20deg:         [0.004, 0.004, 0.003, 0.002, 0.001, 0.0,   0.0]
+    frac_gt_25deg:         [0.002, 0.001, 0.001, 0.0,   0.0,   0.0,   0.0]
+  slopes_dtm_lm_100m_core:
+    baseline_m: [2, 10]
+    directional_rms_deg: [3.50, 3.12]
+    gradient_median_deg: [3.88, 3.62]
+    gradient_p90_deg: [6.67, 6.02]
+    gradient_p99_deg: [14.72, 10.91]
+    source: [this_work_dtm]
+    confidence: M
+    basis: measured
+  slopes_dtm_lm_detrended_100m_tiles:
+    baseline_m: [2, 4, 6, 10, 20]
+    directional_rms_deg: [2.90, 2.80, 2.69, 2.49, 2.07]
+    gradient_median_deg: [2.36, 2.30, 2.24, 2.08, 1.72]
+    gradient_p90_deg: [5.55, 5.41, 5.25, 4.91, 4.16]
+    gradient_p99_deg: [14.66, 14.00, 13.33, 11.91, 8.88]
+    frac_gt_10deg: [0.023, 0.021, 0.019, 0.015, 0.008]
+    source: [this_work_dtm]
+    confidence: M
+    basis: measured
+  slopes_dtm_rocky_north_ray_ejecta_1_2R:
+    baseline_m: [2, 10, 50]
+    directional_rms_deg: [9.80, 8.84, 8.06]
+    gradient_median_deg: [8.82, 8.69, 7.90]
+    gradient_p90_deg: [21.97, 20.23, 19.33]
+    gradient_p99_deg: [33.93, 27.80, 24.08]
+    frac_gt_15deg: [0.237, 0.216, 0.166]
+    frac_gt_25deg: [0.063, 0.028, 0.005]
+    source: [this_work_dtm]
+    confidence: M
+    basis: measured
+  slopes_dtm_south_ray_ejecta_1_2R:
+    baseline_m: [2, 10, 50]
+    directional_rms_deg: [5.12, 4.84, 4.28]
+    gradient_median_deg: [5.06, 4.90, 4.52]
+    gradient_p90_deg: [11.19, 10.75, 9.78]
+    gradient_p99_deg: [18.33, 16.33, 13.30]
+    source: [this_work_dtm]
+    confidence: M
+    basis: measured
+  slopes_design_reference_sp8023_mean_deg:
+    baseline_m: [1, 10, 100, 1000]
+    nominal_rough_upland: [8.9, 5.1, 2.8, 1.7]
+    minimum_smooth_mare: [3.7, 1.6, 0.9, 0.8]
+    maximum_rough_mare: [13.9, 8.0, 4.2, 2.3]
+    source: [sp8023]
+    confidence: M
+    basis: "read (digitised, +/-0.5 deg)"
+  sun:
+    basis: "measured (Meeus) and read (ALSJ Scotti); agreement within 0.02 deg"
+    source: [alsj_scotti, meeus1998, this_work_sun]
+    confidence: H
+    azimuth_convention: "from north through east"
+    events:
+      # name: [utc, elevation_deg, azimuth_deg, gz_light_direction_ENU (propagation, = -to_sun)]
+      landing:    ["1972-04-21T02:23:35Z", 14.74, 86.00, [-0.9647, -0.0675, -0.2544]]
+      eva1_start: ["1972-04-21T16:47:38Z", 21.94, 84.66, [-0.9235, -0.0863, -0.3736]]
+      eva1_end:   ["1972-04-21T23:58:40Z", 25.53, 83.93, [-0.8973, -0.0954, -0.4310]]
+      eva2_start: ["1972-04-22T16:33:35Z", 33.79, 82.03, [-0.8231, -0.1152, -0.5562]]
+      eva2_end:   ["1972-04-22T23:56:44Z", 37.45, 81.06, [-0.7842, -0.1234, -0.6081]]
+      eva3_start: ["1972-04-23T15:25:28Z", 45.10, 78.63, [-0.6920, -0.1392, -0.7083]]
+      eva3_end:   ["1972-04-23T21:05:31Z", 47.88, 77.56, [-0.6549, -0.1445, -0.7417]]
+      liftoff:    ["1972-04-24T01:25:47Z", 50.00, 76.66, [-0.6254, -0.1483, -0.7660]]
+    subsolar_latitude_deg: {value: 1.55, source: [alsj_scotti, this_work_sun], confidence: H, basis: measured}
+    local_sunrise_utc: "1972-04-19T21:10Z"
+    local_sunset_utc: "1972-05-04T14:40Z"
+    max_elevation_deg: {value: 79.5, note: "Sun to the north at local noon, 1972-04-27"}
+    elevation_rate_deg_per_h: {value: 0.50, confidence: H, basis: measured}
+    angular_radius_deg: {value: 0.265, confidence: H, basis: measured}
+    planned_vs_actual_note: "11.9-12 deg was the planned landing sun angle; the actual landing (about 6 h late) was at 14.7 deg"
+  earth:
+    elevation_deg: {value: 75, range: [73, 77.2], source: [alsj_scotti, this_work_sun], confidence: H, basis: measured}
+    azimuth_deg: {value: 321, range: [319.6, 322.6], source: [alsj_scotti, this_work_sun], confidence: H, basis: measured}
+
+craters:
+  sfd_model: "cumulative N(>=D) = C * D^-b per m^2, D in m; equilibrium (steady state)"
+  C_per_m2: {value: 0.05, range: [0.03, 0.08], units: "m^-2 (with D in m)", valid_for: "0.2-50 m (equilibrium extends to >~100-300 m on ~3.9 Ga Cayley plains)", source: [shoemaker1970, sp8023, xiao_werner2015, hirabayashi2017, minton2019], confidence: M, basis: derived, note: "classical steady state 0.079 (=10^-1.1, 5.2 % of geometric saturation) is the upper end; Xiao & Werner 0.011-0.060; Apollo 15 site ~0.016*D^-1.8; no Apollo 16 count at 0.2-50 m found. Below 1 m only Surveyor data (L)."}
+  b_cumulative_slope: {value: 2.0, range: [1.8, 2.0], source: [shoemaker1970, xiao_werner2015, hirabayashi2017], confidence: H, basis: read}
+  geometric_saturation_coefficient: {value: 1.54, units: "N = 1.54 D^-2", source: [minton2019], confidence: H, basis: recalled}
+  reference_counts_per_100x100m:
+    D_ge_m: [0.2, 0.5, 1, 2, 5, 10, 20, 50]
+    C_0p05: [12500, 2000, 500, 125, 20, 5, 1.25, 0.2]
+    C_0p079: [19858, 3177, 794, 199, 32, 7.9, 2.0, 0.32]
+    C_0p03: [7500, 1200, 300, 75, 12, 3, 0.75, 0.12]
+    basis: measured
+  degradation_fractions:
+    fresh_A: {value: 0.05, range: [0.03, 0.10], source: [mahanti2018], confidence: M, basis: "read (35-250 m: A 'a little <3 %', C '>70 %'); extrapolated below 35 m (L)"}
+    intermediate_B: {value: 0.25, range: [0.20, 0.30], source: [mahanti2018], confidence: M, basis: read}
+    degraded_C: {value: 0.70, range: [0.60, 0.75], source: [mahanti2018], confidence: M, basis: read}
+    generator_rule: "relative freshness rho = d/d_fresh = exp(-u), u ~ U(0,3)  ->  ~10 % rho>0.73, ~20 % 0.4-0.73, ~70 % <0.4"
+  mean_d_over_D_population: {value: 0.07, range: [0.05, 0.10], valid_for: "35-250 m", source: [mahanti2018], confidence: M, basis: "read (<0.1)"}
+  d_over_D_fresh_by_size:
+    D_gt_400m: {value: 0.20, source: [stopar2017], confidence: H, basis: read}
+    D_200_400m: {value: 0.17, source: [stopar2017], confidence: H, basis: read}
+    D_100_200m: {value: 0.15, source: [stopar2017], confidence: H, basis: read}
+    D_30_100m: {value: 0.12, range: [0.11, 0.14], source: [stopar2017], confidence: H, basis: read}
+    D_lt_30m: {value: 0.13, range: [0.10, 0.17], source: [stopar2017, basilevsky2012_lunokhod], confidence: L, basis: derived, note: "below NAC DTM resolution; extrapolation"}
+  d_over_D_by_state:
+    fresh_A: {value: 0.13, range: [0.11, 0.17], confidence: M}
+    intermediate_B: {value: 0.08, range: [0.06, 0.10], confidence: M}
+    degraded_C: {value: 0.03, range: [0.01, 0.06], confidence: M}
+    source: [stopar2017, mahanti2018, sp8023]
+    basis: derived
+    pre_apollo_reference_sp8023: {fresh: [0.23, 0.25], young: [0.17, 0.19], mature: [0.11, 0.13], note: "superseded by LROC for D<400 m"}
+  rim_height_over_D:
+    fresh_A: {value: 0.03, range: [0.022, 0.04], source: [sp8023, ulrich1981g, this_work_dtm], confidence: M, basis: "read (SP-8023 fresh 0.022-0.06; South Ray 0.030-0.034)"}
+    intermediate_B: {value: 0.015, range: [0.01, 0.025], source: [sp8023], confidence: M, basis: read}
+    degraded_C: {value: 0.005, range: [0.0, 0.01], source: [sp8023], confidence: M, basis: read}
+  interior_profile:
+    fresh_A: "paraboloid bowl; max wall slope atan(4 d/D) = 26-31 deg for d/D 0.12-0.15 (below regolith repose ~35 deg)"
+    intermediate_B: "flattened bowl / cone, wall 12-25 deg"
+    degraded_C: "inverted cone, wall 2-12 deg (Mahanti 2018)"
+    flat_floor_threshold: {value: "D/t > 4 (t = regolith thickness ~7 m -> D > ~28 m, fresh craters)", source: [quaide_oberbeck1968], confidence: M, basis: snippet}
+    concentric_bench_threshold: {value: "D/t > 8-10 (-> D > ~60 m)", source: [quaide_oberbeck1968], confidence: M, basis: snippet}
+  ejecta:
+    thickness_profile: {value: "t(r) = t_rim * (r/R)^-3 for r >= R", source: [mcgetchin1973, ulrich1981g], confidence: M, basis: "snippet / read (South Ray preferred exponent -3.0)"}
+    ejecta_fraction_of_rim_height: {value: 0.6, range: [0.5, 0.7], source: [ulrich1981g], confidence: M, basis: read, note: "South Ray: 10-12 m ejecta on 20-22 m rim"}
+    continuous_extent_R_from_center: {value: 2.5, range: [2, 3], units: "crater radii", source: [mcgetchin1973], confidence: M, basis: snippet}
+    rays_extent_D: {value: 15, range: [10, 16], units: "crater diameters (South Ray rays ~10 km)", source: [holt1981, ulrich1981g], confidence: M, basis: read}
+  blocky:
+    rule: "fresh (A) or intermediate (B) craters with D > ~4-6 * regolith thickness are blocky; P(blocky) ramps 0 at D=20 m -> 1 at D>=80 m (t~7 m); degraded (C) craters carry no extra blocks"
+    min_blocky_D_m: {value: 30, range: [20, 40], source: [freeman1981, ulrich1981g, schaber1981], confidence: M, basis: derived, note: "WC (40 m) reached bedrock; Buster (90 m) blocky; Spook (370 m, old) not blocky"}
+    block_annulus_R: {value: [1.0, 2.0], source: [sp8023], confidence: M, basis: read}
+    block_sfd_in_annulus_nominal: {value: "N(>=D) = 1e-2 * (D/0.7)^-2.8 per m^2", valid_for: "0.5-20 m", source: [sp8023], confidence: M, basis: "read (digitised)"}
+    largest_block_m: {value: "B_max = 0.29 * D^0.66 (D in m)", range: "coefficient 0.25-0.3", source: [bart_melosh2010], confidence: L, basis: "recalled, not verified; consistent with North Ray (1 km -> ~25 m) and Buster (90 m -> 5 m)"}
+    boulder_survival: {value: "~50 % of metre-size boulders destroyed in several tens of Myr; 90-99 % in 200-300 Myr", source: [basilevsky2015, ghent2014], confidence: M, basis: snippet}
+  dtm_consistency_check:
+    basis: measured
+    source: [this_work_synthetic]
+    result: "crater-only terrain (C=0.079, fresh d/D 0.18) through a NAC-DTM emulator gives detrended directional RMS slope 3.1 deg (2 m) / 2.6 deg (10 m) vs DTM 2.9 / 2.5 deg, but the slope distribution is too bimodal (gradient median 0.8 vs 2.4 deg)"
+    guidance: "use the DTM for wavelengths > ~6-10 m; add synthetic craters only for 0.2-10/20 m (C~0.05) plus fractal roughness; tune the composite to the roughness targets"
+
+rocks:
+  definition: "N(>=D) = cumulative number of rocks per m^2 with longest visible diameter >= D (m); cover fractions use projected discs pi D^2/4"
+  model_form: "broken power law N(>=D) = A_i * D^-b_i per segment, continuous at breaks"
+  sizes_cm_for_tables: [2, 5, 10, 20, 50, 100, 200]
+  lm_site:
+    description: "Apollo 16 LM/ALSEP area: Cayley plains with discontinuous South Ray ray debris"
+    segments:   # [D_lo_m, D_hi_m, b]
+      - [0.005, 1.0, 2.8]
+      - [1.0, 50.0, 3.5]
+    A_N_ge_1m_per_m2: {value: 3.78e-4, range: [1.4e-4, 1.5e-3], source: [schaber1981, this_work_rocks], confidence: M, basis: "derived (fit to 2-20 cm cover = 2.0 %)"}
+    b1: {value: 2.8, range: [2.6, 3.1], valid_for: "0.02-1 m", source: [schaber1981, this_work_rocks], confidence: M, basis: "derived from cover ratios (LM: F(>10 cm)/F(2-20 cm); station 2: >5 cm/all; station 1: >10 cm/>2 cm imply 2.8-3.1)"}
+    b2: {value: 3.5, range: [3.0, 4.0], valid_for: "1-10 m", source: [cintala_mcbride1994], confidence: L, basis: "derived (large blocks steeper than surface power laws)"}
+    D_max_in_100m_tile_m: {value: 3, range: [2, 5], confidence: L, basis: derived, note: "largest boulder near ALSEP 'several metres'"}
+    counts_per_100m2:   # D >= 2, 5, 10, 20, 50, 100, 200 cm
+      nominal: [2160, 166, 23.9, 3.43, 0.263, 0.0378, 0.0033]
+      low:     [1140, 80, 10.7, 1.44, 0.101, 0.0135, 0.0010]
+      high:    [3920, 362, 59.6, 9.84, 0.908, 0.150, 0.0163]
+      basis: measured
+      source: [this_work_rocks]
+      confidence: M
+      note: "low = 0.45x density, b=2.9/3.7 (sparse inter-ray); high = 2.5x, b=2.6/3.2 (ray patch)"
+    counts_in_100x100m_core_nominal: [216000, 16600, 2390, 343, 26, 3.8, 0.33]
+    cover_fraction:
+      ge_2cm: {value: 0.023, range: [0.011, 0.051], confidence: M, basis: measured}
+      d_2_20cm: {value: 0.020, range: [0.013, 0.06], source: [schaber1981], confidence: H, basis: read}
+      ge_5cm: {value: 0.011, range: [0.004, 0.015], source: [schaber1981], confidence: M, basis: "measured (station 2 data 0.4-1.5 %)"}
+      ge_10cm: {value: 0.0062, range: [0.003, 0.009], source: [schaber1981], confidence: H, basis: "read (0.3-0.9 %)"}
+      ge_1m: {value: 0.0007, range: [0.0002, 0.003], confidence: L, basis: measured}
+    golombek_comparison: {k_fit_to_F10cm: 0.0176, counts_per_100m2: [659, 147, 32.6, 3.9, 0.037, 1.0e-4, 0.0], note: "under-predicts 2-20 cm by ~3x and >=0.5 m blocks by ~7x; not recommended at cm scale", source: [golombek_rapp1997, golombek2021], basis: measured}
+    spatial: "Poisson x log-normal density field (sigma_ln ~0.6, correlation length ~20-50 m; rays radial to South Ray, bearing ~200 deg from LM) + block annuli around blocky fresh craters"
+  rocky_north_ray_rim:
+    description: "North Ray crater rim crest near House Rock (station 11), within ~10 m of pan 18"
+    segments:   # [D_lo_m, D_hi_m, b]
+      - [0.005, 0.1, 2.5]
+      - [0.1, 1.0, 2.3]
+      - [1.0, 25.0, 3.0]
+    N_ge_10cm_per_m2: {value: 1.04, range: [0.64, 1.54], source: [ulrich1981, this_work_rocks], confidence: M, basis: "derived (fit to >=10 cm cover = 4.3 %)"}
+    b0_below_10cm: {value: 2.5, range: [2.2, 2.8], confidence: L, basis: "assumed (no small-fragment data at station 11)"}
+    b1_10cm_1m: {value: 2.3, range: [2.1, 2.6], source: [ulrich1981], confidence: M, basis: "derived (>20 % of >=10 cm fragments are >20 cm)"}
+    b2_above_1m: {value: 3.0, range: [2.6, 3.5], source: [sp8023, cintala_mcbride1994], confidence: L, basis: derived}
+    D_max_m: {value: 25, source: [ulrich1981], confidence: H, basis: read, note: "House Rock area; boulders 'from 25 m to less than 1 m'"}
+    counts_per_100m2:   # D >= 2, 5, 10, 20, 50, 100, 200 cm
+      nominal: [5810, 588, 104, 21.1, 2.57, 0.521, 0.065]
+      low:     [3590, 363, 64.2, 10.6, 0.98, 0.161, 0.020]
+      high:    [8620, 872, 154, 36.0, 5.25, 1.23, 0.153]
+      basis: measured
+      source: [this_work_rocks]
+      confidence: "M (10 cm-1 m), L (<10 cm, >2 m)"
+      note: "low: >=10 cm cover 2 %, b1=2.6; high: 8 %, b1=2.1. With b0=2.8 the >=2 cm count would be ~9400; with b0=2.3 ~4200."
+    counts_in_100x100m_core_nominal: [581000, 58800, 10400, 2110, 257, 52, 6.5]
+    cover_fraction:
+      ge_2cm: {value: 0.094, range: [0.05, 0.155], confidence: L, basis: measured}
+      ge_10cm: {value: 0.043, range: [0.02, 0.08], source: [ulrich1981], confidence: H, basis: read}
+      ge_1m: {value: 0.012, range: [0.004, 0.03], confidence: L, basis: measured}
+    fraction_rounded: {value: 0.7, source: [ulrich1981], confidence: H, basis: read}
+    golombek_comparison: {k_fit_to_F10cm: 0.065, counts_per_100m2: [1291, 387, 130, 33, 2.36, 0.094, 0.0004], source: [golombek_rapp1997, golombek2021], basis: measured}
+    spatial: "strongly clustered: boulder groups (House/Outhouse rocks, White breccia boulders) separated by block-poor gaps (SP-8023: >=50 m paths through dense block fields)"
+  other_variants:
+    north_ray_station13_outer_ejecta: {counts_per_100m2: [2280, 175, 25.2, 2.56, 0.124, 0.0126, 0.0011], cover_ge_10cm: 0.005, source: [ulrich1981, this_work_rocks], confidence: M, basis: "measured from read cover"}
+    wc_crater_rim_extreme: {counts_per_100m2: [21600, 2190, 387, 78.5, 9.55, 1.94, 0.24], cover_ge_10cm: 0.16, source: [ulrich1981g, this_work_rocks], confidence: L, basis: "measured (North Ray shape scaled to 16 % cover)"}
+    sp8023_1969_nominal_intercrater: {counts_per_100m2: [1343, 191, 43.6, 9.96, 1.41, 0.232, 0.027], source: [sp8023], confidence: M, basis: "read (digitised)"}
+    sp8023_1969_max_intercrater: {counts_per_100m2: [2953, 578, 168, 49.0, 3.19, 0.405, 0.051], source: [sp8023], confidence: M, basis: "read (digitised)"}
+  golombek_rapp_model:
+    equation: "F_k(D) = k * exp(-q(k) * D), q(k) = 1.79 + 0.152/k  (F = cumulative fractional AREA of rocks >= D, D in m)"
+    source: [golombek_rapp1997, golombek2021]
+    basis: read
+    lunar_applicability: "calibrated on Mars and Earth analogue sites (D >~ 0.1 m); for Apollo 16 it cannot fit both the 2-20 cm cover and the presence of 0.5-several m blocks; use the power law"
+
+rock_shape:
+  axial_ratio_b_over_a: {value: 0.7, range: [0.5, 0.9], source: [fujiwara1978, capaccioni1986, michikami2016], confidence: M, basis: snippet}
+  axial_ratio_c_over_a: {value: 0.5, range: [0.3, 0.7], source: [fujiwara1978, capaccioni1986, michikami2016], confidence: M, basis: snippet, note: "c/a ~0.2 for spall-like cratering fragments"}
+  longest_to_shortest: {value: "1:1 to 1:5", source: [sp8023], confidence: M, basis: read}
+  exposed_height_over_D: {value: 0.5, range: [0.3, 0.7], source: [sp8023, demidov_basilevsky2014], confidence: M, basis: "read (SP-8023 design rule); Demidov & Basilevsky value not verified"}
+  angularity:
+    lm_site: "highly angular to subround; many glass-coated; most perched or slightly buried"
+    older_inter_ray: "less angular, more eroded, more buried (station 1)"
+    north_ray_rim: "~70 % rounded; dark-matrix breccias angular and jointed; light-matrix breccias rounded, crudely jointed"
+    source: [schaber1981, ulrich1981]
+    confidence: H
+    basis: read
+  burial_fraction_of_height:
+    young_south_ray_debris: {distribution: "Beta(1.5, 6)", mean: 0.2, range: [0.0, 0.3], confidence: L, basis: derived}
+    old_rocks: {distribution: "Beta(3, 4)", mean: 0.43, range: [0.2, 0.7], confidence: L, basis: derived}
+    perched_fraction_young: {value: 0.3, range: [0.1, 0.5], confidence: L, basis: derived}
+  fillet:
+    lm_site: "rare or none"
+    old_or_friable: {height_over_rock_height: [0.3, 0.5], width_over_rock_height: [0.5, 1.0], confidence: L, basis: derived}
+    north_ray_friable_boulders_fillet_thickness_m: {value: 0.15, note: ">= 15 cm of regolith in fillets; ~1 cm regolith elsewhere on the rim", source: [ulrich1981], confidence: H, basis: read}
+  rock_types_lm_alsep_percent: {C1_igneous: 5.4, C2_metaclastic: 19.6, B1_light_matrix_light_clast: 25.0, B2_light_matrix_dark_clast: 7.1, B3_light_and_dark: 10.7, source: [schaber1981], confidence: H, basis: "read (Table 1, n = 56; remaining classes B4, B5, glass not listed here)"}
+  light_colored_fraction_north_ray: {value: 0.8, range: [0.7, 0.9], source: [ulrich1981], confidence: H, basis: read}
+  dark_rock_fraction_north_ray: {value: 0.2, range: [0.1, 0.3], source: [ulrich1981], confidence: H, basis: read}
+  glass_coatings: "common on LM-area rocks; dark glass splashes on boulder faces (shiny/specular)"
+  rock_normal_albedo_visible: {value: 0.3, range: [0.18, 0.51], source: [holt1981], confidence: H, basis: read}
+  rock_bulk_density_kg_m3: {value: 2400, range: [2200, 2900], source: [kiefer2012, sp8023], confidence: M, basis: "snippet (feldspathic 2200-2600) / read (SP-8023 2800-2900)"}
+
+roughness:
+  target_deviogram:   # LM site, plane-detrended, directional
+    equation: "nu(L) = nu1 * (L / 1 m)^H ; RMS slope = atan(nu / L)"
+    nu1_m: {value: 0.069, range: [0.05, 0.09], source: [this_work_dtm, this_work_fbm, helfenstein_shepard1999, guo2021], confidence: M, basis: derived}
+    H: {value: 0.8, range: [0.7, 0.85], valid_for: "1 cm - 40 m", source: [helfenstein_shepard1999, guo2021, this_work_dtm], confidence: M, basis: derived}
+    rms_slope_deg_at_L:
+      L_m: [0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0, 20.0]
+      value: [10.4, 8.7, 6.7, 5.3, 4.0, 2.9, 2.5, 2.2]
+      note: "<=3 m from the fBm model (H=0.8); 10 and 20 m follow the same law and match the DTM-detrended measurements (2.49 and 2.07 deg)"
+  hurst_by_scale:
+    cm_dm: {value: 0.69, range: [0.6, 0.85], source: [helfenstein_shepard1999, guo2021], confidence: M, basis: "snippet (D_f = 2.31 +/- 0.06 -> H = 0.69; CE-4 0.6-0.85)"}
+    m_10_40: {value: 0.89, source: [this_work_dtm], confidence: M, basis: measured}
+    m_40_140: {value: 0.83, source: [this_work_dtm], confidence: M, basis: measured}
+    m_140_400: {value: 0.54, source: [this_work_dtm], confidence: M, basis: measured}
+    lola_17m_2700m_highlands_median: {value: 0.95, source: [rosenburg2011], confidence: H, basis: snippet}
+    lola_17m_2700m_maria_median: {value: 0.76, source: [rosenburg2011], confidence: H, basis: snippet}
+  measured_small_scale:
+    rms_slope_1mm_deg: {mare: 16, fra_mauro: 25, uncertainty: [4, 1], source: [helfenstein_shepard1999], basis: snippet}
+    rms_slope_1cm_deg: {mare: 8.1, fra_mauro: 12.5, uncertainty: [2.4, 2.0], source: [helfenstein_shepard1999], basis: snippet}
+    ce4_bidirectional_slope_7mm_median_deg: {value: 10, source: [guo2021], basis: read}
+    ce4_rms_height_125mm_window_mm: {value: 4, range: [1, 18], source: [guo2021], basis: read}
+  rms_height_detrended_m:
+    window_m: [0.125, 1.0, 10.0, 20.0, 50.0, 100.0]
+    target: [0.0024, 0.013, 0.09, null, null, null]
+    dtm_measured_median: [null, null, 0.029, 0.079, 0.24, 0.54]
+    note: "target from fBm (H=0.8, nu1=0.069 m); the DTM 10 m value is a smoothing-limited lower bound"
+    source: [this_work_fbm, this_work_dtm]
+    confidence: M
+  spectral_synthesis:
+    psd_form: "2-D isotropic S(f) = S0 * f^-(2+2H), f in cycles/m"
+    S0_m4: {value: 2.54e-5, for_H: 0.8, alt: {H_0p7: 3.56e-5, H_0p9: 1.73e-5}, source: [this_work_fbm], confidence: M, basis: measured, note: "total roughness; reduce when craters and rocks are added explicitly, then re-measure the composite"}
+  rocky_variant_scale_factor_nu: {value: 2.5, range: [2, 3], valid_for: ">= 2 m", source: [this_work_dtm], confidence: M, basis: measured, note: "North Ray ejecta DTM: 9.8 deg at 2 m, 8.8 deg at 10 m, H~0.94; cm scale assumed x1.5 (L)"}
+  collision_lowpass_m: {value: 0.25, range: [0.2, 0.3], confidence: M, basis: derived, note: "rigid wheel r=0.165 m bridges a 1 cm-deep pit narrower than ~11 cm"}
+  small_scale_features: ["small fresh craters (cm-dm) on the D^-2 line", "perched and partly buried pebbles", "soil clods 0.5-5 cm (L)", "light subsurface soil exposed by disturbance (1-3 cm depth)", "elephant-hide texture on slopes > 10-15 deg (L)", "LRV tracks 0-5 cm (avg 1.25 cm), footprints a few cm (optional)"]
+
+photometry:
+  normal_albedo_visible:
+    lm_and_central_stations: {value: 0.175, range: [0.16, 0.19], source: [holt1981], confidence: H, basis: read}
+    north_ray_ejecta_soil: {value: 0.27, range: [0.21, 0.32], source: [holt1981], confidence: H, basis: read}
+    stone_mountain_soil: {value: 0.145, range: [0.14, 0.15], source: [holt1981], confidence: H, basis: read}
+    rocks: {value: 0.3, range: [0.18, 0.51], source: [holt1981], confidence: H, basis: read}
+    fresh_crater_walls_max: {value: 0.6, source: [holt1981], confidence: H, basis: read, note: "South Ray rim 0.60, North Ray walls 0.52"}
+    sp8023_blocks: {range: [0.14, 0.22], source: [sp8023], confidence: M, basis: read}
+  lola_normal_albedo_1064nm_highlands: {value: 0.30, range: [0.25, 0.35], source: [lucey2014], confidence: M, basis: "read (bulk mode near 0.3; absolute calibration via Kaguya MI)"}
+  lola_vband_to_1064_ratio: {value: 0.583, source: [lucey2014], confidence: M, basis: read}
+  lab_soil_62231_reff_i30_e0:
+    wavelength_nm: [415, 450, 550, 650, 753, 899, 951.5, 1000, 1064, 1550, 2500]
+    value: [0.108, 0.119, 0.142, 0.161, 0.178, 0.189, 0.194, 0.200, 0.209, 0.265, 0.345]
+    source: [pieters1999]
+    confidence: H
+    basis: "read (Table 2: 415-1000 nm); digitised (>1000 nm, +/-0.005)"
+    lab_vs_insitu_note: "lab ~33 % brighter than the Diviner in-situ fit; an ASTER study finds the site 0.5-0.55x the lab sample (snippet)"
+  spectral_ratios_62231: {r905_over_r550: 1.33, r1550_over_r905: 1.40, r905_over_r1064: 0.906, basis: measured, source: [pieters1999, this_work_colour], confidence: M}
+  lidar_normal_albedo_zero_phase:
+    soil_905nm: {value: 0.25, range: [0.21, 0.29], source: [holt1981, lucey2014, pieters1999], confidence: M, basis: derived}
+    soil_1550nm: {value: 0.35, range: [0.29, 0.41], source: [holt1981, lucey2014, pieters1999], confidence: M, basis: derived}
+    north_ray_soil_905nm: {value: 0.37, range: [0.30, 0.45], confidence: L, basis: derived}
+    rocks_905nm: {value: 0.38, range: [0.22, 0.60], confidence: L, basis: derived}
+    incidence_dependence_note: "zero phase -> nearly no cos(theta) falloff (Lommel-Seeliger-like); grazing returns ~3x brighter than a Lambertian of the same normal albedo at 70 deg incidence"
+  sensor_robin_w: {wavelength_nm: 905, fov_deg: [120, 70], range_m: [0.1, 150], range_at_10pct_reflectivity_m: 70, angular_resolution_deg_HxV: [0.15, 0.36], source: [robinw_datasheet], confidence: H, basis: read}
+  colour_linear_rgb:
+    tint_ratio_RGB: {value: [1.12, 1.00, 0.82], source: [pieters1999, this_work_colour], confidence: M, basis: "measured (CIE 1931 via Wyman 2013 fit, 5778 K solar blackbody, white-balanced)"}
+    lab_reff_rgb: {value: [0.159, 0.141, 0.116], basis: measured}
+    insitu_diffuse_base_color_rgb: {value: [0.12, 0.107, 0.088], range_scale: [0.8, 1.2], approx_srgb_8bit: [97, 92, 84], confidence: M, basis: derived}
+    zero_phase_brightness_rgb: {value: [0.20, 0.175, 0.144], confidence: M, basis: derived}
+    north_ray_soil_and_light_breccia_scale: {value: 1.5, range: [1.3, 1.7], confidence: M, basis: derived}
+    dark_breccia_glass_scale: {value: 0.5, range: [0.4, 0.6], confidence: L, basis: derived}
+  hapke:
+    sato2014_average_moon_643nm: {w: 0.36, b_S0: 2.01, h_S: 0.079, theta_bar_deg_fixed: 23.657, B_C0_fixed: 0.0, porosity_phi_fixed: 1.0, source: [sato2014], confidence: M, basis: "README read (fixed values); w, B_S0, h_S via secondary table (snippet)"}
+    helfenstein_veverka1987_moon: {w: 0.21, h: 0.07, theta_bar_deg: 20, source: [helfenstein_veverka1987], confidence: L, basis: snippet}
+    behaviour: "strong backscatter and opposition surge in fine soil (rays brighten most at low phase); rocks closer to Lambertian (relatively brightest at 30-50 deg phase) and reduce the opposition effect; polarization up to 30 % near 120 deg phase"
+  lighting:
+    solar_irradiance_W_m2: {value: 1346, note: "1361 W/m^2 at 1 AU scaled to 1.0055 AU (April 1972)", confidence: H, basis: derived}
+    solar_illuminance_lux: {value: 128000, range: [125000, 133000], confidence: M, basis: recalled}
+    ambient_fill_fraction: {value: 0.01, range: [0.0, 0.03], note: "terrain-scattered light only; ~0 on horizontal shadowed ground on flat terrain", confidence: M, basis: derived}
+    earthshine_fraction_of_sun: {value: 3e-5, range: [1e-5, 1e-4], confidence: L, basis: recalled}
+    penumbra_width_per_m_m: {value: 0.0093, confidence: H, basis: measured}
+
+mechanics:
+  bulk_density_g_cm3:
+    d0_15cm: {value: 1.50, range: [1.45, 1.55], source: [carrier1991], confidence: H, basis: recalled}
+    d0_30cm: {value: 1.58, range: [1.53, 1.63], source: [carrier1991], confidence: H, basis: recalled}
+    d30_60cm: {value: 1.74, range: [1.69, 1.79], source: [carrier1991], confidence: H, basis: recalled}
+    apollo16_range: {value: [1.40, 1.80], source: [mitchell1972], confidence: H, basis: read}
+    newer_profile: {value: "~1.30 at surface -> 1.92 below 1 m", source: [connolly_carrier2023], confidence: M, basis: snippet}
+  porosity_footprints_apollo16_percent: {intercrater: 45.0, crater_rims: 46.1, lm_area: 43.1, source: [mitchell1972], confidence: H, basis: read}
+  cohesion_kPa:
+    d0_15cm: {value: 0.52, range: [0.44, 0.62], source: [carrier1991, ding2024], confidence: H, basis: "recalled; matches Yutu-2 reference c=520 Pa (read)"}
+    d0_30cm: {value: 0.90, range: [0.74, 1.1], source: [carrier1991], confidence: H, basis: recalled}
+    d30_60cm: {value: 3.0, range: [2.4, 3.8], source: [carrier1991], confidence: H, basis: recalled}
+    apollo16_range: {value: [0.1, 1.0], station4: 0.6, source: [mitchell1972], confidence: H, basis: read}
+  friction_angle_deg:
+    d0_15cm: {value: 42, range: [41, 43], source: [carrier1991, ding2024], confidence: H, basis: "recalled; matches Yutu-2 reference phi=42 (read)"}
+    d0_30cm: {value: 46, range: [44, 47], source: [carrier1991], confidence: H, basis: recalled}
+    d30_60cm: {value: 54, range: [52, 55], source: [carrier1991], confidence: H, basis: recalled}
+    apollo16_range: {value: [30, 50], station4: 46.5, source: [mitchell1972], confidence: H, basis: read}
+  bekker_lrv_soil: {n: 1.0, k_phi_kN_m3: 820, k_c_kN_m2: 1.4, c_kPa: 0.17, phi_deg: 35, source: [costes1972, ding2024], confidence: M, basis: "recalled; n=1, K_s=820 confirmed in Ding 2024 (read)"}
+  yutu2_farside: {phi_deg: [21.5, 42.0], cohesion_kPa: [0.52, 3.15], wheel_soil_external_friction_deg: [8.3, 16.5], bearing_capacity_kPa: 4, sinkage_mm_mean: 8, sinkage_mm_max: 15, slip: "mostly skid, -0.075..0", side_slip_deg: [0.5, 3.0], source: [ding2024], confidence: M, basis: read}
+  lrv_apollo16: {track_depth_cm_mean: 1.25, track_depth_cm_range: [0, 5], max_slope_driven_deg: 18, slope_capability_deg: [19, 23], max_speed_km_h: 17, slip: "minimal (crisp chevron imprints)", cone_penetration_gradient_kN_m2_per_m: 840, source: [mitchell1972], confidence: H, basis: read}
+  lunokhod1: {bearing_strength_kg_cm2: {mode: 0.34, range: [0.2, 1.0]}, vane_shear_kg_cm2: {mode: 0.048, range: [0.02, 0.09]}, source: [lunokhod_ntrs], confidence: M, basis: snippet}
+  low_gravity_effects:
+    same_load_sinkage_ratio_moon_vs_earth: {value: [3.6, 7.3], for_n: [0.91, 0.40], source: [wong2012], confidence: M, basis: read}
+    earth_tests_overpredict_drawbar_pull_percent: {value: [24, 44], source: [daca2022], confidence: M, basis: snippet}
+    dem_same_mass_traction_coefficient: "similar at lunar and Earth gravity; forces scale with g (2025 DEM study, snippet)"
+  a300_prediction: {mass_kg_assumed: 100, wheel_load_N: 40, sinkage_cm: 1.1, compaction_resistance_coeff: 0.13, simple_estimate_coeff: 0.09, source: [this_work_mechanics], confidence: M, basis: derived}
+  rigid_body_recommendation:
+    mu_longitudinal: {value: 0.40, range: [0.30, 0.50], source: [mitchell1972, this_work_mechanics], confidence: "M-L", basis: derived, note: "tan(19-23 deg) LRV slope capability = 0.34-0.42"}
+    mu_lateral: {value: 0.30, range: [0.20, 0.45], source: [ding2024, this_work_mechanics], confidence: L, basis: derived, note: "wheel-soil external friction tan(8.3-16.5 deg) = 0.15-0.30, plus bulldozing; lower values ease skid-steer turning"}
+    rolling_resistance_coeff: {value: 0.08, range: [0.05, 0.13], confidence: M, basis: derived}
+    visual_sinkage_cm: {value: 1.0, range: [0.5, 1.5], note: "up to 5 cm on fresh crater rims, ~15 cm at friable North Ray boulders", confidence: M, basis: "read/derived"}
+    max_traversable_slope_deg: {value: 20, range: [18, 23], source: [mitchell1972], confidence: M, basis: read}
+    existing_world_values_note: "lunar_surface.world uses mu=0.8 (Earth-g A/B test); flat_bullet_test.sdf uses 0.2; 0.8 exceeds plausible effective regolith traction"
+
+gravity:
+  g_m_s2: {value: 1.624, range: [1.621, 1.627], source: [this_work_dtm, sp8023], confidence: H, basis: "measured (GM=4902.800 km^3/s^2, r=1737.408 km); 1.62 (SP-8023) is acceptable (0.25 % lower)"}
+  gm_km3_s2: {value: 4902.800, confidence: H, basis: recalled}
+  centrifugal_correction_m_s2: {value: -1.2e-5, confidence: H, basis: measured}
+  local_anomaly_m_s2: {value: 0.0, range: [-0.003, 0.003], confidence: M, basis: recalled}
+  rotation_rate_rad_s: {value: 2.6617e-6, note: "0.549 deg/h; gyrocompassing impractical", confidence: H, basis: measured}
+
+other:
+  magnetometer: "no global field; crustal fields up to a few hundred nT at Apollo 16 (largest at North Ray among Apollo 14-16); do not use a magnetometer for heading; no GNSS"
+  curvature_drop_m: {at_m: [100, 150, 500, 1000, 1500], value: [0.0029, 0.0065, 0.072, 0.288, 0.648], note: "d^2/2R; apply to the far-field ring when mapping to a flat world", confidence: H, basis: measured}
+  horizon_distance_m_for_sensor_height: {height_m: [0.5, 0.7, 1.0], value: [1318, 1560, 1864], confidence: H, basis: measured}
+  lidar_sampling_current_sim:
+    assumption: "0.01 rad resolution, sensor ~0.7 m above ground"
+    range_m: [1, 2, 3, 5, 10, 20, 40]
+    grazing_deg: [35.0, 19.3, 13.1, 8.0, 4.0, 2.0, 1.0]
+    along_range_spacing_m: [0.014, 0.057, 0.129, 0.357, 1.43, 5.71, 22.9]
+    cross_range_spacing_m: [0.01, 0.02, 0.03, 0.05, 0.10, 0.20, 0.40]
+    implication: "1 cm detail visible only within ~2-3 m, 2-5 cm pebbles within ~5 m; beyond ~10 m returns come mainly from sensor-facing micro-facets, rocks and rims with long range shadows behind them"
+  froude_speed_factor: {value: 2.457, note: "0.8 m/s on the Moon ~ 1.97 m/s on Earth dynamically", confidence: H, basis: measured}
+  sun_motion_static_lighting_ok_hours: {value: 2, note: "0.5 deg/h", confidence: H, basis: measured}
+  human_artifacts_optional: "LM descent stage, ALSEP, LRV, tracks, bright LM blast zone exist at the site today"
+
+sources:
+  wagner2017: {citation: "Wagner R.V. et al. (2017) Coordinates of anthropogenic features on the Moon. Icarus 283, 92-103", url: "https://www.lroc.asu.edu/data/support/downloads/2016_LROC_Coordinates_of_Human_Features.pdf"}
+  nssdc_sites: {citation: "NSSDC Apollo landing site coordinates (LROC-derived)", url: "https://nssdc.gsfc.nasa.gov/planetary/lunar/lunar_sites.html"}
+  lroc_dtm_readme: {citation: "LROC NAC_DTM_APOLLO16 README (2013)", url: "https://pds.lroc.im-ldi.com/data/LRO-L-LROC-5-RDR-V1.0/LROLRC_2001/DATA/SDP/NAC_DTM/APOLLO16/NAC_DTM_APOLLO16_README.TXT"}
+  henriksen2016: {citation: "Henriksen M.R. et al. (2016) Extracting accurate and precise topography from LROC NAC stereo observations. Icarus", url: "https://dx.doi.org/10.1016/j.icarus.2016.05.012"}
+  alsj_scotti: {citation: "ALSJ Sun/Earth alt-az table (J. Scotti)", url: "https://www.nasa.gov/wp-content/uploads/static/history/alsj/Scotti_AltAz.txt"}
+  alsj_lawrence: {citation: "ALSJ sun angles table (B. Lawrence, 1999)", url: "https://www.apollojournals.org/alsj/sunangles.html"}
+  meeus1998: {citation: "Meeus J. (1998) Astronomical Algorithms, 2nd ed., Willmann-Bell (Ch. 25, 47, 53)", url: ""}
+  schaber1981: {citation: "Schaber G.G. (1981) Field geology of the Apollo 16 central region. USGS PP 1048 ch. D1", url: "https://www.apollojournals.org/alsj/a16/D1_field_geo.pdf"}
+  ulrich1981: {citation: "Ulrich G.E. (1981) Geology of North Ray crater. USGS PP 1048 ch. D2", url: "https://www.apollojournals.org/alsj/a16/D2_geology_north_ray.pdf"}
+  freeman1981: {citation: "Freeman V.L. (1981) Regolith of the Apollo 16 site. USGS PP 1048 ch. F", url: "https://www.apollojournals.org/alsj/a16/A16PP-F-Regolith.pdf"}
+  ulrich1981g: {citation: "Ulrich G.E., Moore H.J., Reed V.S., Wolfe E.W., Larson K.B. (1981) Ejecta distribution model, South Ray crater. USGS PP 1048 ch. G", url: "https://www.apollojournals.org/alsj/a16/A16PP-G-SouthRayEjecta.pdf"}
+  holt1981: {citation: "Holt H.E. (1981) Optical properties at the Apollo 16 landing site. USGS PP 1048 ch. H", url: "https://www.apollojournals.org/alsj/a16/A16PP-H-Optical%20Properties.pdf"}
+  pp1048: {citation: "Ulrich, Hodges, Muehlberger (eds.) (1981) Geology of the Apollo 16 area, central lunar highlands. USGS PP 1048", url: "https://pubs.usgs.gov/publication/pp1048"}
+  mitchell1972: {citation: "Mitchell J.K. et al. (1972) Soil mechanics. Apollo 16 Preliminary Science Report, NASA SP-315, sec. 8", url: "https://an.rsl.wustl.edu/apollo/data/a16/station4/srp/docs/soilmechanics_psr.pdf"}
+  sp8023: {citation: "NASA SP-8023 (1969) Lunar Surface Models (space vehicle design criteria)", url: "https://ntrs.nasa.gov/api/citations/19700009596/downloads/19700009596.pdf"}
+  shoemaker1970: {citation: "Shoemaker E.M., Morris E.C. (1970) Physical characteristics of the lunar regolith determined from Surveyor television observations. Radio Science 5, 129", url: "https://pubs.usgs.gov/publication/70227167"}
+  xiao_werner2015: {citation: "Xiao Z., Werner S.C. (2015) Size-frequency distribution of crater populations in equilibrium on the Moon. JGR Planets 120, 2277", url: "https://doi.org/10.1002/2015JE004860"}
+  minton2019: {citation: "Minton D.A. et al. (2019) The equilibrium size-frequency distribution of small craters ... Icarus 326, 63", url: "https://arxiv.org/abs/1902.07746"}
+  hirabayashi2017: {citation: "Hirabayashi M. et al. (2017) An analytical model of crater count equilibrium. Icarus", url: "https://ar5iv.arxiv.org/html/1701.00471"}
+  mahanti2018: {citation: "Mahanti P. et al. (2018) Small lunar craters at the Apollo 16 and 17 landing sites - morphology and degradation. Icarus 299, 475", url: "https://lroc.im-ldi.com/images/1009"}
+  stopar2017: {citation: "Stopar J.D. et al. (2017) Relative depths of simple craters and the nature of the lunar regolith. Icarus 298, 34", url: "https://lroc.im-ldi.com/images/975"}
+  basilevsky2012_lunokhod: {citation: "Basilevsky A.T. et al. (2012) Lunokhod-1 area small craters (EPSC 2012-464)", url: "https://meetingorganizer.copernicus.org/EPSC2012/EPSC2012-464.pdf"}
+  quaide_oberbeck1968: {citation: "Quaide W.L., Oberbeck V.R. (1968) JGR 73, 5247; thresholds via Prieur et al. (2018) JGR Planets", url: "https://www.duo.uio.no/bitstream/10852/67686/2/Prieur_et_al-2018-Journal_of_Geophysical_Research__Planets.pdf"}
+  mcgetchin1973: {citation: "McGetchin T.R., Settle M., Head J.W. (1973) Radial thickness variation in impact crater ejecta. EPSL 20, 226", url: "https://ntrs.nasa.gov/citations/19740032200"}
+  fassett_thomson2014: {citation: "Fassett C.I., Thomson B.J. (2014) Crater degradation on the lunar maria. JGR Planets 119, 2255", url: ""}
+  bart_melosh2010: {citation: "Bart G.D., Melosh H.J. (2010) Distributions of boulders ejected from lunar craters. Icarus 209, 337", url: ""}
+  basilevsky2015: {citation: "Basilevsky A.T. et al. (2015) Survival times of meter-sized rock boulders on the surface of airless bodies", url: "https://ntrs.nasa.gov/citations/20150001903"}
+  ghent2014: {citation: "Ghent R.R. et al. (2014) Constraints on the recent rate of lunar ejecta breakdown and implications for crater ages. Geology 42, 1059", url: "https://repository.si.edu/items/edc681df-3456-497b-a26b-12924914fd2f"}
+  cintala_mcbride1994: {citation: "Cintala M.J., McBride K.M. (1994) Block distributions on the lunar surface: surface vs orbital photography. LPSC XXV 261; NASA TM-104804 (1995)", url: "https://ntrs.nasa.gov/api/citations/19940030913/downloads/19940030913.pdf"}
+  golombek_rapp1997: {citation: "Golombek M.P., Rapp D. (1997) Size-frequency distributions of rocks on Mars and Earth analog sites. JGR 102, 4117", url: "https://doi.org/10.1029/96JE03319"}
+  golombek2021: {citation: "Golombek M. et al. (2021) Rock size-frequency distributions at the InSight landing site, Mars. Earth and Space Science", url: "https://doi.org/10.1029/2021EA001959"}
+  bandfield2011: {citation: "Bandfield J.L. et al. (2011) Lunar surface rock abundance and regolith fines temperatures derived from LRO Diviner. JGR 116, E00H02", url: "https://doi.org/10.1029/2011JE003866"}
+  di2016: {citation: "Di K. et al. (2016) Rock size-frequency distribution analysis at the Chang'E-3 landing site. PSS 120, 103", url: "https://doi.org/10.1016/j.pss.2015.11.012"}
+  li_wu2018: {citation: "Li Y., Wu B. (2018) Analysis of rock abundance on lunar surface from orbital and descent images. JGR Planets 123, 1061", url: "https://doi.org/10.1029/2017JE005496"}
+  fujiwara1978: {citation: "Fujiwara A. et al. (1978) Expected shape distribution of asteroids obtained from laboratory impact experiments. Nature 272, 602", url: ""}
+  capaccioni1986: {citation: "Capaccioni F. et al. (1984/1986) Asteroidal catastrophic collisions simulated by hypervelocity impact experiments", url: ""}
+  michikami2016: {citation: "Michikami T. et al. (2016) Fragment shapes in impact experiments ranging from cratering to catastrophic disruption. Icarus", url: "https://oro.open.ac.uk/44943"}
+  demidov_basilevsky2014: {citation: "Demidov N.E., Basilevsky A.T. (2014) Height-to-diameter ratios of Moon rocks ... Solar System Research 48 (not read)", url: ""}
+  kiefer2012: {citation: "Kiefer W.S. et al. (2012) The density and porosity of lunar rocks. GRL 39, L07201", url: "https://doi.org/10.1029/2012GL051319"}
+  helfenstein_shepard1999: {citation: "Helfenstein P., Shepard M.K. (1999) Submillimeter-scale topography of the lunar regolith. Icarus 141, 107", url: "https://doi.org/10.1006/icar.1999.6160"}
+  guo2021: {citation: "Guo D., Fa W., Wu B., Li Y., Liu Y. (2021) Millimeter- to decimeter-scale surface roughness of the Moon at the Chang'E-4 exploration region. GRL 48, e2021GL094931", url: "https://research.polyu.edu.hk/en/publications/millimeter-to-decimeter-scale-surface-roughness-of-the-moon-at-th/"}
+  rosenburg2011: {citation: "Rosenburg M.A. et al. (2011) Global surface slopes and roughness of the Moon from LOLA. JGR 116, E02001", url: "https://pgda.gsfc.nasa.gov/products/70"}
+  shepard2001: {citation: "Shepard M.K. et al. (2001) The roughness of natural terrain. JGR 106, 32777", url: "https://doi.org/10.1029/2000JE001429"}
+  lucey2014: {citation: "Lucey P.G. et al. (2014) The global albedo of the Moon at 1064 nm from LOLA. JGR Planets 119, 1665", url: "https://ntrs.nasa.gov/citations/20140017658"}
+  pieters1999: {citation: "Pieters C.M. (1999) The Moon as a spectral calibration standard enabled by lunar samples: the Clementine example", url: "https://sites.brown.edu/relab/files/2022/02/Pieters_NV99_8025.pdf"}
+  sato2014: {citation: "Sato H. et al. (2014) Resolved Hapke parameter maps of the Moon. JGR Planets 119, 1775", url: "https://pds.lroc.im-ldi.com/data/LRO-L-LROC-5-RDR-V1.0/LROLRC_2001/DATA/SDP/WAC_HAPKEPARAMMAP/WAC_HAPKEPARAMMAP_README.TXT"}
+  helfenstein_veverka1987: {citation: "Helfenstein P., Veverka J. (1987) Photometric properties of lunar terrains derived from Hapke's equation. Icarus 72, 342", url: "https://ntrs.nasa.gov/citations/19870013999"}
+  robinw_datasheet: {citation: "Seyond Robin W1G datasheet v2.1.3", url: "https://irp.cdn-website.com/237e2515/files/uploaded/Seyond_Robin+W1G+Datasheet_EN_Public_V2.1.3_ITS.pdf"}
+  carrier1991: {citation: "Carrier W.D. III, Olhoeft G.R., Mendell W. (1991) Physical properties of the lunar surface. Lunar Sourcebook ch. 9", url: ""}
+  connolly_carrier2023: {citation: "Connolly J., Carrier W.D. (2023) LPSC abstract", url: "https://ntrs.nasa.gov/api/citations/20220018853/downloads/LPSC%202023%20Abstract_Connolly_Carrier_v2.pdf"}
+  ding2024: {citation: "Ding L. et al. (2024) Lunar rock investigation and tri-aspect characterization of lunar farside regolith by a digital twin. Nat. Commun. 15, 2098", url: "https://pmc.ncbi.nlm.nih.gov/articles/PMC11258293/"}
+  wong2012: {citation: "Wong J.Y. (2012) Predicting the performances of rigid rover wheels on extraterrestrial surfaces based on test results obtained on earth. J. Terramechanics 49, 49-61", url: "https://doi.org/10.1016/j.jterra.2011.11.002"}
+  daca2022: {citation: "Daca A., Skonieczny K. (2022) ASTRA 2022 (reduced-gravity wheel tests)", url: "https://robotics.estec.esa.int/ASTRA/Astra2022/24_Skonieczny-Krzysztof-24-109-Skonieczny-Krzysztof.pdf"}
+  costes1972: {citation: "Costes N.C., Farmer J.E., George E.B. (1972) Mobility performance of the Lunar Roving Vehicle: terrestrial studies - Apollo 15 results. NASA TR R-401 (not read)", url: ""}
+  lunokhod_ntrs: {citation: "Leonovich A.K. et al. (Lunokhod soil results via NASA translations)", url: "https://ntrs.nasa.gov/citations/19780005029"}
+  this_work_dtm: {citation: "science agent: dtm_stats.py, detrended_compare.py (2026-10-25)", url: "file:///home/nargon/togo_assets/lunar/experiments/science/"}
+  this_work_sun: {citation: "science agent: sun_geometry.py (Meeus), validated vs ALSJ within 0.02 deg", url: "file:///home/nargon/togo_assets/lunar/experiments/science/sun_geometry.py"}
+  this_work_rocks: {citation: "science agent: calib_models.py, calib_rocky_final.txt", url: "file:///home/nargon/togo_assets/lunar/experiments/science/"}
+  this_work_synthetic: {citation: "science agent: crater_terrain_check.py, detrended_compare.py", url: "file:///home/nargon/togo_assets/lunar/experiments/science/"}
+  this_work_fbm: {citation: "science agent: fbm_check.py", url: "file:///home/nargon/togo_assets/lunar/experiments/science/fbm_check.py"}
+  this_work_colour: {citation: "science agent: calib_models.py (CIE 1931 / Wyman 2013 fit, 5778 K blackbody)", url: "file:///home/nargon/togo_assets/lunar/experiments/science/calib_models.py"}
+  this_work_mechanics: {citation: "science agent: Bekker rigid-wheel estimate (Section 7.2 of the report)", url: ""}

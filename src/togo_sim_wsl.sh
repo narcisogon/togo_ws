@@ -92,6 +92,12 @@ set -u
 # WSLg uses Mesa's D3D12 renderer to access the Windows GPU.
 export MESA_D3D12_DEFAULT_ADAPTER_NAME="${MESA_D3D12_DEFAULT_ADAPTER_NAME:-NVIDIA}"
 
+# Mesa's D3D12 driver leaks memory on every multi-draw-indirect call
+# (d3d12_get_cmd_signature never hits its cache), so gz sim / gz gui RAM
+# grows by several MB/s until WSL runs out. Hiding the extension makes
+# Ogre use plain draws instead; the rendered image and LiDAR are identical.
+export MESA_EXTENSION_OVERRIDE="${MESA_EXTENSION_OVERRIDE:--GL_ARB_multi_draw_indirect}"
+
 # ------------------------------------------------------------
 # ROS 2 DDS configuration
 # ------------------------------------------------------------

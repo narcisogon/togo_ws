@@ -1,0 +1,61 @@
+# Python venv for building and validating the Apollo 16 world (lunar_world_gen).
+# Only the generator, its tests and the analysis scripts need it. RUNNING the world does not:
+# the launch file and tools/{bench_world,lidar_capture,run_robot_tests,rover_drive_test}.py use the
+# system /usr/bin/python3 with ROS 2 Jazzy (rclpy) and the Gazebo python bindings.
+#
+# Exact `pip freeze` of ~/.venvs/lunar_world as used for the 2026-10-25 build
+# (Python 3.12.3 = Ubuntu 24.04 /usr/bin/python3, pip 26.2.2). Recreate it with:
+#
+#   python3 -m venv ~/.venvs/lunar_world          # needs the python3-venv package (installed)
+#   ~/.venvs/lunar_world/bin/pip install --upgrade pip==26.2.2
+#   ~/.venvs/lunar_world/bin/pip install -r src/lunar_world_gen/requirements-venv.txt
+#
+# Direct dependencies (everything else below is what they pull in):
+#   numpy scipy numba(+llvmlite) rasterio pyproj trimesh pydelatin pyfqmr pygltflib matplotlib
+#   PyYAML tqdm pytest rosbags
+# Blender 5.2 (Windows, rock library only) and the gz / ROS python bindings are not pip packages.
+affine==3.0.1
+apsw==3.54.1.0
+attrs==26.1.0
+backports.zstd==1.8.0
+certifi==2026.10.23
+click==8.5.0
+contourpy==1.4.0
+cycler==0.12.1
+dataclasses-json==0.6.7
+Deprecated==3.0.0
+fonttools==4.67.0
+iniconfig==2.3.1
+kiwisolver==1.5.1
+llvmlite==0.50.0
+lz4==4.4.5
+marshmallow==3.26.2
+matplotlib==3.11.2
+mypy_extensions==1.1.0
+numba==0.68.0
+numpy==2.5.4
+packaging==26.3
+pillow==13.0.0
+pluggy==1.7.0
+pydelatin==0.4.0
+pyfqmr==0.5.0
+pygltflib==1.16.5
+Pygments==2.21.0
+pyparsing==3.3.3
+pyproj==3.8.0
+pytest==9.1.1
+python-dateutil==3.0.0
+PyYAML==6.0.3
+rasterio==1.5.2
+rosbags==0.11.9
+ruamel.yaml==0.19.1
+scipy==1.18.1
+setuptools==84.2.1
+six==1.17.0
+tqdm==4.70.1
+trimesh==5.2.0
+typing-inspect==0.9.0
+typing_extensions==4.16.0
+tzdata==2026.5
+wheel==0.48.0
+wrapt==2.5.1

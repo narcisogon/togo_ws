@@ -1,0 +1,23 @@
+--- a/bullet/src/JointFeatures.cc
++++ b/bullet/src/JointFeatures.cc
+@@ -376,7 +376,19 @@
+     link->getMotionState()->getWorldTransform(trans);
+     btVector3 motion = quatRotate(trans.getRotation(),
+       convertVec(gz::math::eigen3::convert(jointInfo->axis)));
+-    btVector3 angular_vel = motion * static_cast<btScalar>(_value);
++    // [lunar patch] velcmd: keep the parent's angular velocity; only the
++    // relative angular velocity about the joint axis is set to _value.
++    btVector3 parentAngVel(0, 0, 0);
++    auto parentIt = this->links.find(jointInfo->parentLinkId);
++    if (parentIt != this->links.end() && parentIt->second &&
++        parentIt->second->link)
++    {
++      parentAngVel = parentIt->second->link->getAngularVelocity();
++    }
++    btVector3 current = link->getAngularVelocity();
++    btVector3 relative = current - parentAngVel;
++    btVector3 angular_vel = current - motion * motion.dot(relative) +
++      motion * static_cast<btScalar>(_value);
+     link->setAngularVelocity(angular_vel);
+   }
+   break;

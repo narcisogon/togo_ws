@@ -1,0 +1,243 @@
+# Apollo 16 lunar world: default generator configuration.
+#
+# The values come from the research reports in docs/research/:
+#   calibration = lunar_calibration.yaml (science),  site = site_selection.yaml,
+#   gazebo = gazebo_capabilities.md,  rover = rover_baseline.md,
+#   perf = performance_budget.md,  blender = blender_rocks.md.
+# Frame: local ENU at the core centre (x = east, y = north, z = up), metres; z = 0 at
+# href (the core's mean band-limited DTM height). Lengths are metres unless the key says otherwise.
+
+world:
+  name: apollo16_core
+  seed: 16                   # master seed; every component derives its own stream (config.rng)
+  preset: full               # full | fast (see presets at the end)
+
+paths:
+  # relative paths resolve against this package folder (src/lunar_world_gen)
+  dtm: ../togo/togo_gz/media/dem/NAC_DTM_APOLLO16.TIF
+  dtm_filled: ../togo/togo_gz/media/dem/NAC_DTM_APOLLO16_filled.tif
+  site_yaml: docs/research/site_selection.yaml
+  calibration_yaml: docs/research/lunar_calibration.yaml
+  dtm_extract: tools/dtm_extract.py
+  rock_library: ~/togo_assets/lunar/library/rocks_v1
+  build_dir: ~/togo_assets/lunar/build/apollo16_core
+  world_dir: ~/togo_assets/lunar/worlds/apollo16_core
+  physics_plugin: ~/togo_assets/lunar/plugins/libgz-physics7-bullet-lunar-plugin.so
+
+site:
+  key: core                  # site_selection.yaml key; centre lat/lon, href and yaw come from there
+  lat_deg: -8.973448
+  lon_deg: 15.511126
+  href_m: 8.1955
+  yaw_deg: 0.0
+  sphere_radius_m: 1737400.0
+
+zones:
+  core:
+    size_m: 100.0
+    tile_size_m: 10.0
+    spacing_m: 0.01          # height-field node spacing (1 cm)
+    margin_m: 0.5            # extra border computed around each tile (filters, rock footprints)
+    edge_fade_m: 3.0         # fine detail (< split wavelength) fades to 0 over this band at the core edge
+                             # (fix round FID-04: 1 -> 3 m widens the 10-90 % transition from 0.8 to 2.5 m;
+                             # the fBm gains below are calibrated with this value)
+  ring:                      # everything the LiDAR can reach from inside the core (range 150 m)
+    size_m: 500.0
+    spacing_m: 0.25
+    edge_fade_m: 20.0        # synthetic detail fades to 0 over this band at the ring's outer edge
+  far:
+    size_m: 2200.0
+    spacing_m: 2.0
+    deseam: default          # dtm_extract --deseam default (east strip seam ~958 m east of the core)
+  horizon:
+    size_m: 20000.0
+    spacing_m: 20.0
+
+dtm:
+  lowpass_lambda_m: 10.0     # Butterworth cut-off = DTM effective resolution (site)
+  lowpass_order: 4
+  interp: cubic
+
+terrain:
+  roughness:
+    # Target deviogram of the composite (DTM + craters + fBm), plane-detrended (calibration):
+    #   nu(L) = nu1 * (L / 1 m)^H ; RMS slope = atan(nu / L)
+    nu1_m: 0.069
+    hurst: 0.8
+    targets_rms_slope_deg: {0.01: 10.4, 0.1: 6.7, 1.0: 4.0, 10.0: 2.5}
+    tolerance_frac: 0.25     # acceptance band on nu(L)
+    psd_S0_m4: 2.54e-5       # isotropic PSD S(f) = S0 f^-(2+2H) for the TOTAL roughness (calibration)
+    fbm_gain: 0.109          # coarse-band (>= split wavelength) PSD gain; calibrated together with fbm_gain_fine,
+                             # the 3 m core fade, the 32 deg talus limiter and crater v2 (fix round FID-06)
+    fbm_gain_fine: 0.578     # fine-band (2 cm - 0.5 m) PSD gain (amplitude scales with sqrt(gain))
+    min_wavelength_m: 0.02   # shortest synthesised wavelength (2 grid nodes at 1 cm)
+    split_wavelength_m: 0.5  # coarse/fine split: coarse (>= split) everywhere in core+ring, fine only in the core
+    coarse_field_spacing_m: 0.10   # grid of the shared coarse fBm field (5 nodes per split wavelength)
+  craters:
+    sfd_C_per_m2: 0.05       # N(>=D) = C * D^-b per m^2 (calibration, equilibrium)
+    sfd_b: 2.0
+    D_min_m: {core: 0.2, ring: 1.0}
+    D_max_m: 16.0            # the band-limited DTM keeps craters above this (site)
+    fade_D_m: [8.0, 16.0]    # synthetic craters thin out linearly over this range (DTM resolves them)
+    freshness:               # rho = d / d_fresh = exp(-u), u ~ U(0, u_max) (calibration generator_rule)
+      u_max: 3.0
+    d_over_D_fresh: 0.13
+    rim_height_over_D_fresh: 0.03
+    rim_width_over_R: 0.35   # rim crest half-width as a fraction of R
+    ejecta_exponent: -3.0    # ejecta thickness ~ (r/R)^-3 outside the rim
+    ejecta_extent_R: 2.5
+    ejecta_fraction_of_rim: 0.6
+    fresh_profile: paraboloid      # interior shape blends paraboloid (fresh) -> inverted cone (degraded)
+    rim_rounding_k_over_h: 0.5     # smooth-min width k = 0.5 hp; hp is solved so the rounded crest equals h (FID-05)
+    shape:                         # per-crater variation within the calibration ranges (FID-16)
+      d_spread: 0.15               # depth x U(1 -/+ 0.15)
+      rim_spread: 0.2              # rim height x U(1 -/+ 0.2)
+      n_spread: 0.1                # profile exponent 1 + rho * U(1 -/+ 0.1)
+      axis_ratio_min: 0.85         # ellipticity, random orientation
+      rim_mod_a2_max: 0.2          # azimuthal rim modulation (2nd and 3rd harmonics)
+      rim_mod_a3_max: 0.1
+  talus:                           # angle-of-repose limiter on the composite core height (FID-03, terrain/talus.py)
+    enabled: true
+    max_slope_deg: 32.0            # walls steeper than this slump (mass-conserving); max 35 deg at 0.5 m baseline
+  fillets:
+    enabled: true
+    min_rock_D_m: 0.10
+    height_over_exposed_height: [0.0, 0.15]   # LM site: fillets rare / small (calibration)
+    width_over_exposed_height: [0.5, 1.0]
+    profile: wedge                 # FID-11: wedge from the slope-aware ground-level outline (ellipse = old shape)
+    min_burial: 0.06               # perched rocks with compliance-only bedding get no fillet
+    slope_aware: true
+
+rocks:
+  library_version: rocks_v1
+  sfd:                       # broken power law N(>=D) = A_i D^-b_i per m^2, continuous (calibration lm_site)
+    A_ge_1m_per_m2: 3.78e-4
+    segments: [[0.005, 1.0, 2.8], [1.0, 50.0, 3.5]]
+  D_min_m: {core: 0.02, ring: 0.30}
+  D_max_m: 3.0
+  density_field:             # Poisson x log-normal modulation (South Ray ray debris)
+    sigma_ln: 0.6
+    corr_length_m: 35.0
+  crater_enhancement:        # smooth, size-gated debris boost around fresh craters (FID-02)
+    profile: smooth
+    factor: 2.0              # block factor for rocks >= small_max_D_m around blocky craters (calibration 2-5)
+    min_crater_D_m: 5.0
+    min_rho: 0.73            # only fresh craters
+    small_max_D_m: 0.10      # debris below this size gets at most debris_factor
+    debris_factor: 1.5
+    blocky_D_m: [20.0, 80.0] # rocks >= 10 cm are boosted only around craters in this size ramp
+    outer_R: 2.5
+    floor_fraction: 0.5
+  classes:                   # size class -> library class and LOD used in the core
+    # burial [0, 1]: the young-debris Beta(1.5, 6) applies directly (mean 0.2; FID-12)
+    - {name: pebble, D_max_m: 0.05, library_class: pebble, lod: 0, burial: [0.0, 1.0]}
+    - {name: small,  D_max_m: 0.12, library_class: medium, lod: 2, burial: [0.0, 1.0]}
+    - {name: medium, D_max_m: 0.30, library_class: medium, lod: 1, burial: [0.0, 1.0]}
+    - {name: large,  D_max_m: 50.0, library_class: large,  lod: 0, burial: [0.0, 1.0]}
+  ring_lod: 2                # rocks outside the core use the lowest LOD
+  burial_beta: [1.5, 6.0]    # Beta(a, b) for the burial fraction, scaled into the class range (young debris)
+  perched_fraction: 0.3      # fraction resting on the surface (bedded 2-6 %, not buried)
+  perched_burial: [0.02, 0.06]
+  tilt_max_deg: 8.0          # random tilt of buried rocks after settling (FID-01: 15 deg left gaps on the high side)
+  perched_tilt_max_deg: 0.0  # perched rocks take the settled tilt only
+  rest_face: {mode: stable, min_tip_deg: 3.0, max_extent_over_a: 0.8, flat_scale: 0.02}   # FID-01 stable rest facet
+  settle: {enabled: true, apply_to: all, iterations: 4, max_step_deg: 20.0}               # 3-contact quasi-static rest
+  bedding: {target_gap_over_D: 0.03, max_frac: 0.18, apply_to: perched, adaptive_min_D_m: 0.05}
+  overlap: {enabled: true, pierce_min_D_m: 0.05, max_rounds: 8}                           # FID-09 interpenetration repair
+  edge_band: {enabled: true, width_m: 6.0, lod: {pebble: 1}}   # FID-04: rocks < 30 cm continue 6 m outside the core
+  contact_on_rendered_ground: true   # re-seat rocks on the rendered TIN before merging (CR-05, FID-08, FID-10)
+  min_separation_factor: 0.6 # rocks >= 10 cm keep centres >= factor * (r1 + r2) apart
+  collision_min_D_m: 0.05    # rocks this size and larger are raised into the collision surface
+
+mesh:
+  core_visual_max_error_m: 0.003   # finer ground detail (was 5 mm; core ground ~4.7 M triangles, within budget)
+  core_visual_seam_max_edge_m: 0.08   # FID-07: refine edges near 10 m tile seams so they show no crease lines
+  core_visual_seam_band_m: 0.06       #   (+0.33 M triangles)
+  ring_visual_max_error_m: 0.05
+  far_visual_max_error_m: 0.20
+  horizon_visual_max_error_m: 2.0
+  collision:
+    spacing_m: 0.02          # collision height field node spacing (core)
+    lowpass_wavelength_m: 0.25   # wheel-scale low-pass (calibration collision_lowpass_m)
+    ground_offset_m: -0.020  # lower the ground: Bullet's 10 mm box/cylinder margin + ~1 cm sinkage (gazebo, calibration)
+    rock_offset_m: -0.010    # rocks: margin compensation only
+    core_max_error_m: 0.015  # integration: 1 cm gave 582 k core collision triangles (16.5 k baked rocks are ~70 %),
+                             # 1.5 cm gives 487 k, inside the 0.25-0.5 M budget (DESIGN 7 / 13a)
+    ring_max_error_m: 0.03
+    far_max_error_m: 0.50
+    core_max_edge_m: null    # conforming max-edge refinement (mesh/refine.py) is OFF: capping the triangle size
+    ring_max_edge_m: null    # worsened slope climbing (0.83 -> 0.34-0.73); the robot-side collision
+                             # simplification is the effective RTF fix. 0.5 is an opt-in for CAD-collision users.
+  uv_tile_m: {core: 2.0, ring: 2.0, far: 20.0, horizon: 200.0}   # world-planar UV repeat length per zone
+
+materials:
+  regolith:
+    base_color_linear: [0.12, 0.107, 0.088]   # in-situ diffuse colour (calibration)
+    albedo_variation: 0.12                    # +- relative variation in the tiled albedo texture
+    roughness: 0.95
+    texture_px: 2048                          # tileable maps covering uv_tile_m
+    normal_detail_rms_slope_deg: 12.0         # sub-cm micro-relief baked into the normal map
+  rocks:
+    roughness: 0.85
+
+physics:
+  engine: patched            # patched | stock
+  step_s: {patched: 0.001, stock: 0.004}   # stock plugin needs 4 ms to soften the turning artefact (rover)
+  gravity_m_s2: 1.62
+  ground_mu: 0.40            # longitudinal; honoured on meshes only by the patched plugin (rover, calibration).
+                             # Rocks are baked into the ground collision meshes, so they share this mu
+                             # (Bullet friction is per body; rock_mu was removed in the fix round, CR-09).
+
+lighting:
+  sun_event: eva1_start      # calibration site.sun.events key
+  sun_events:                # [elevation_deg, azimuth_deg_from_north, gz_direction_ENU]
+    landing:    [14.74, 86.00, [-0.9647, -0.0675, -0.2544]]
+    eva1_start: [21.94, 84.66, [-0.9235, -0.0863, -0.3736]]
+    eva2_start: [33.79, 82.03, [-0.8231, -0.1152, -0.5562]]
+    eva3_start: [45.10, 78.63, [-0.6920, -0.1392, -0.7083]]
+  sun_intensity: 1.0
+  earth: {elevation_deg: 75.0, azimuth_deg: 321.0}
+  realistic: {ambient: 0.01, earthshine_intensity: 3.0e-5}   # earthshine = 3e-5 of the sun (calibration; FID-14)
+  inspection: {ambient: 0.25, fill_intensity: 0.35, sun_event: eva2_start}
+
+spherical_coordinates:
+  surface_model: CUSTOM_SURFACE   # sphere matching the DTM (gazebo, legacy); MOON_SCS is an ellipsoid
+  axis_m: 1737400.0
+
+spawn:
+  footprint_half_m: [0.55, 0.40]  # rover collision footprint half extents (rover)
+  base_link_height_m: 0.136       # base_link above the ground when resting on its wheels (rover)
+  clearance_m: 0.04
+  max_slope_deg: 5.0
+  rock_free_D_m: 0.05             # no rock this size or larger under the footprint (+ margin)
+  rock_free_margin_m: 0.3
+  turn_rock_free_D_m: 0.10        # turn site: no rock this size or larger within 1.5 m (DESIGN 13 decision:
+                                  # at 1.66 rocks/m^2 >= 5 cm no 1.5 m disc is free of 5 cm rocks)
+  test_sites: [flat, slope, rock, turn]
+
+budgets:                          # DESIGN 13a (perf); enforced by build.py (meshes stage)
+  core_tile_visual_max_tris: 200000     # per 10 m core tile ground mesh (pydelatin max_triangles cap)
+  core_visual_max_tris: 10000000        # core terrain total
+  core_rocks_warn_tris: 6600000         # rocks merged into the core tiles: soft target (warning)
+  core_rocks_max_tris: 7500000          #   hard limit (CR-01: seeds 16-23 give 6.54-6.68 M)
+  visual_total_warn_tris: 16000000      # every visual mesh: DESIGN 13a target (warning)
+  visual_total_max_tris: 20000000       #   hard cap
+  core_collision_target_tris: [250000, 500000]   # warning outside this range
+  core_collision_max_tris: 1000000
+  collision_total_warn_tris: 1000000    # all collision meshes
+  collision_total_max_tris: 1500000
+
+validation:
+  lidar_poses: 6                  # static LiDAR capture poses inside the core
+  rtf_min: 0.95
+  load_time_max_s: 30.0
+  server_rss_max_gb: 5.0
+
+presets:
+  full: {}
+  fast:
+    mesh:
+      core_visual_max_error_m: 0.010
+      ring_visual_max_error_m: 0.08
+    rocks:
+      D_min_m: {core: 0.03, ring: 0.5}
