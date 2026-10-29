@@ -347,3 +347,7 @@ Started at 00:01 on 2026-10-26 and stopped at 00:11 (the user called it a day); 
     exist. The reports keep their numbers and figures.
   - The cleanup also found a memory watchdog left running since the phase-7 validation, and stopped it with its
     stop file. It could only ever stop its own test simulations.
+- **Next: SLAM speed-up and accuracy**, planned in `docs/SLAM_SPEEDUP_PLAN.md`, a handoff brief for a fresh
+  session. The baseline adds two items the first plan lacked:
+  - the path-helper scripts take about 1.6 cores, a third of all SLAM CPU;
+  - the `graph_based_slam` backend's RAM grows by 315-331 MB/min.

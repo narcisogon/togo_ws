@@ -110,7 +110,8 @@ def test_truth_path_publisher_runs_before_the_bag(fake_bag):
     assert res.returncode == 0, res.stderr
     if gt_tool.is_file():
         out = res.stdout
-        assert "gazebo_gt_path_publisher.py --ros-args -p use_sim_time:=true" in out
+        assert "gazebo_gt_path_publisher.py   # /ground_truth/path" in out   # and no use_sim_time: it reads no clock
+        assert "-e SLAM_REFERENCE_PATH=false" in out                           # replays skip the reference-path node
         assert out.index("gazebo_gt_path_publisher.py") < out.index("ros2 bag play")
     res = run("--bag", str(fake_bag), "--dry-run", "--no-truth-path")
     assert res.returncode == 0 and "gazebo_gt_path_publisher.py" not in res.stdout

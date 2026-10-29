@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Benchmarks the DLIO SLAM on the standard one-lap bag: runs scripts/replay_slam_bag.sh --repeats times with the same
-# config and no RViz, then prints mean ± spread of every metric (tools/slam_compare.py); with --compare-to, the change
+# config, no RViz and no truth-path tool (the score reads the bag's ground_truth.tum; the tool only draws it), then prints mean ± spread of every metric (tools/slam_compare.py); with --compare-to, the change
 # against an earlier label. Replays of the same bag differ a little from run to run, so compare labels (several
 # runs each), never single runs. Run from WSL; no simulation and no other SLAM may run at the same time.
 set -o pipefail
@@ -54,7 +54,7 @@ done
 [[ -n "${LABEL}" ]] || die "--label is required"
 [[ "${LABEL}" =~ ^[A-Za-z0-9._-]+$ ]] || die "--label may only use letters, digits, '.', '_' and '-'"
 
-ARGS=(--label "${LABEL}" --no-rviz)
+ARGS=(--label "${LABEL}" --no-rviz --no-truth-path)
 [[ -n "${CONFIG}" ]] && ARGS+=(--config "${CONFIG}")
 [[ -n "${BAG}" ]] && ARGS+=(--bag "${BAG}")
 trap 'echo; echo "Benchmark interrupted."; exit 130' INT TERM

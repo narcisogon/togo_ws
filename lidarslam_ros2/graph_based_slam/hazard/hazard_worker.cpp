@@ -111,6 +111,8 @@ Worker::Worker(rclcpp::Node & node, std::string map_frame, std::string odom_fram
   pending_.max_age = node_.declare_parameter<double>("hazard/max_input_age_sec", 1.0);
   pending_.update_period = node_.declare_parameter<double>("hazard/update_period_sec", 0.2);
   pending_.batch_clouds = node_.declare_parameter<int>("hazard/batch_clouds", 3);
+  c.fit_threads = node_.declare_parameter<int>("hazard/fit_threads", c.fit_threads);
+  c.fit_early_exit = node_.declare_parameter<bool>("hazard/fit_early_exit", c.fit_early_exit);
   c.validate();
   if (!std::isfinite(pending_.max_age) || pending_.max_age <= 0.0 ||
     !std::isfinite(pending_.update_period) || pending_.update_period < 0.05 ||
@@ -528,6 +530,11 @@ bool Worker::process(const Snapshot & s)
   terrain_initialized_ = true;
   terrain_config_ = s.config_revision; terrain_geometry_ = s.geometry_revision;
   last_config_ = s.config;
+  mem_grid_cells_.store(terrain_.cells());
+  mem_grid_bytes_.store(terrain_.memoryBytes());
+  mem_observed_cells_.store(observations_.size());
+  mem_observation_bytes_.store(observations_.size() * (sizeof(Key) + sizeof(AnchoredCell) + 32) +
+    obstacles_.size() * (sizeof(VoxelKey) + sizeof(AnchoredObstacle) + 32));
 
   // Publish only a complete map for the current graph/configuration.
   std::unique_lock<std::mutex> publication_lock(mutex_);
@@ -710,6 +717,8 @@ rcl_interfaces::msg::SetParametersResult Worker::parameters(const std::vector<rc
         if (value.as_int() < 100) {throw std::invalid_argument("hazard/max_cells must be >= 100");}
         c.max_cells = value.as_int();
       }
+      else if (name == "hazard/fit_threads") {c.fit_threads = value.as_int();}
+      else if (name == "hazard/fit_early_exit") {c.fit_early_exit = value.as_bool();}
       else if (name == "hazard/max_input_age_sec") {candidate.max_age = value.as_double();}
       else if (name == "hazard/update_period_sec") {candidate.update_period = value.as_double();}
       else if (name == "hazard/batch_clouds") {candidate.batch_clouds = value.as_int();}

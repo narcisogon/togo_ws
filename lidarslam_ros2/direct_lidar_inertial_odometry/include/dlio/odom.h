@@ -812,6 +812,7 @@ private:
   double gicp_rotation_ep_;
   double gicp_init_lambda_factor_;
   std::string gicp_regularization_method_;
+  int num_threads_param_;  // odom/numThreads: OpenMP threads for GICP and deskew; 0 = all hardware threads
   bool gicp_reject_bad_corrections_;
   double gicp_max_correction_translation_;
   double gicp_max_correction_rotation_;

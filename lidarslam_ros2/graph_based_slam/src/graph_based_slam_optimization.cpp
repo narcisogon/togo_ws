@@ -328,20 +328,17 @@ void GraphBasedSlamComponent::doPoseAdjustment(
     Eigen::fromMsg(map_array_msg.submaps[i].pose, affine);
     Eigen::Isometry3d pose(affine.matrix());
 
-    // Warm-start the vertex from this submap's last optimized pose (cached
-    // by the incremental assembly loop below) when available, instead of
+    // Warm-start the vertex from this submap's last optimized pose (the one
+    // the assembly loop below used last time) when available, instead of
     // always restarting from raw odometry. This does NOT change
     // relative_pose below -- that stays derived from raw-odometry `pose`,
     // as required for a correct adjacent-edge measurement. It only changes
-    // where the solver starts, which is what lets the assembly cache's
-    // epsilon-based pose-reuse check actually hit for submaps a loop edge
-    // hasn't newly touched (see the comment on submap_assembly_cache_ in
-    // the header for why re-solving from a fixed raw-odometry seed every
-    // call defeated that cache once the graph had a loop edge in it).
+    // where the solver starts, which is what lets the append-only check of
+    // the assembly loop (epsilon-based pose reuse) actually hit for submaps
+    // a loop edge hasn't newly touched.
     Eigen::Isometry3d initial_estimate = pose;
-    const auto warm_start_it = submap_assembly_cache_.find(i);
-    if (warm_start_it != submap_assembly_cache_.end()) {
-      initial_estimate = warm_start_it->second.pose;
+    if (assembled_products_valid_ && i < static_cast<int>(assembled_submap_poses_.size())) {
+      initial_estimate = assembled_submap_poses_[static_cast<std::size_t>(i)];
     }
 
     raw_poses.push_back(pose);
@@ -644,6 +641,12 @@ void GraphBasedSlamComponent::doPoseAdjustment(
   }
 
   const int assembly_start_submap = append_only ? assembled_submap_count_ : 0;
+  // The MapArray goes out only on a full rebuild, a save or (opt-in) every append. It is one more
+  // full-resolution copy of every map point, so it is kept between calls only in that opt-in case and is
+  // otherwise built right here, from the submap files, when it is actually published.
+  const bool map_array_published =
+    !append_only || do_save_map || publish_modified_map_array_on_append_;
+  const bool retain_map_array = publish_modified_map_array_on_append_;
   if (!append_only) {
     assembled_map_cloud_.reset(new pcl::PointCloud<pcl::PointXYZI>());
     assembled_timed_map_points_.clear();
@@ -655,11 +658,16 @@ void GraphBasedSlamComponent::doPoseAdjustment(
     assembled_submap_poses_.clear();
     assembled_submap_count_ = 0;
   }
-  assembled_map_array_msg_.header = map_array_msg.header;
-  assembled_map_array_msg_.cloud_coordinate = assembled_map_array_msg_.LOCAL;
+  lidarslam_msgs::msg::MapArray on_demand_map_array_msg;
+  auto & modified_map_array_msg = retain_map_array ? assembled_map_array_msg_ : on_demand_map_array_msg;
+  modified_map_array_msg.header = map_array_msg.header;
+  modified_map_array_msg.cloud_coordinate = modified_map_array_msg.LOCAL;
   assembled_path_msg_.header.frame_id = global_frame_id_;
+  // Submaps serialised into the MapArray this call: the appended ones when it is retained, all of them
+  // when it is built on demand, none when it is not published.
+  const int map_array_start_submap = !map_array_published ? submaps_size :
+    (retain_map_array ? assembly_start_submap : 0);
 
-  auto & modified_map_array_msg = assembled_map_array_msg_;
   auto & path = assembled_path_msg_;
   auto map_ptr = assembled_map_cloud_;
   auto & timed_map_points = assembled_timed_map_points_;
@@ -668,104 +676,83 @@ void GraphBasedSlamComponent::doPoseAdjustment(
   if (do_save_map && use_dynamic_object_filter_) {
     dynamic_filter_submaps.reserve(submaps_size);
   }
-  for (int i = assembly_start_submap; i < submaps_size; i++) {
+  for (int i = std::min(assembly_start_submap, map_array_start_submap); i < submaps_size; i++) {
+    const bool assemble = i >= assembly_start_submap;    // new to the assembled products
+    const bool serialize = i >= map_array_start_submap;  // goes into the MapArray published now
     const Eigen::Isometry3d & se3 = optimized_poses[static_cast<std::size_t>(i)];
     geometry_msgs::msg::Pose pose = tf2::toMsg(se3);
 
-    /* map: reuse the cached transformed cloud + serialized message for this
-       submap if its optimized pose hasn't moved since the cache was built;
-       otherwise reload from PCD, retransform, and refresh the cache entry. */
-    pcl::PointCloud<pcl::PointXYZI>::Ptr transformed_cloud_ptr;
-    sensor_msgs::msg::PointCloud2::SharedPtr local_cloud_msg_ptr(
-      new sensor_msgs::msg::PointCloud2);
-
-    const auto cache_it = submap_assembly_cache_.find(i);
-    const bool cache_hit = cache_it != submap_assembly_cache_.end() &&
-      posesNearlyEqual(
-        cache_it->second.pose, se3,
-        submap_assembly_reuse_translation_eps_m_,
-        submap_assembly_reuse_rotation_eps_deg_ * M_PI / 180.0);
-
-    if (cache_hit) {
-      transformed_cloud_ptr = cache_it->second.transformed_cloud;
-      *local_cloud_msg_ptr = cache_it->second.local_cloud_msg;
+    /* A submap's points are read from its file whenever they are needed. The former per-submap cache
+       of transformed clouds and serialised messages was two more copies of every map point, kept so a
+       full rebuild after a pose change only redid moved submaps; with the odometry-only graph that
+       never happens, and when it does the reload is a one-off. */
+    pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_ptr;
+    if (use_pcd_cache_) {
+      cloud_ptr = loadSubmapFromPCD(i);
     } else {
-      pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_ptr;
-      if (use_pcd_cache_) {
-        cloud_ptr = loadSubmapFromPCD(i);
-      } else {
-        cloud_ptr.reset(new pcl::PointCloud<pcl::PointXYZI>);
-        pcl::fromROSMsg(map_array_msg.submaps[i].cloud, *cloud_ptr);
-      }
-      transformed_cloud_ptr.reset(new pcl::PointCloud<pcl::PointXYZI>());
+      cloud_ptr.reset(new pcl::PointCloud<pcl::PointXYZI>);
+      pcl::fromROSMsg(map_array_msg.submaps[i].cloud, *cloud_ptr);
+    }
+
+    if (assemble) {
+      pcl::PointCloud<pcl::PointXYZI>::Ptr transformed_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>());
       pcl::transformPointCloud(*cloud_ptr, *transformed_cloud_ptr, se3.matrix().cast<float>());
-      pcl::toROSMsg(*cloud_ptr, *local_cloud_msg_ptr);
-      local_cloud_msg_ptr->header = map_array_msg.submaps[i].cloud.header;
-
-      SubmapAssemblyCacheEntry entry;
-      entry.pose = se3;
-      entry.transformed_cloud = transformed_cloud_ptr;
-      entry.local_cloud_msg = *local_cloud_msg_ptr;
-      submap_assembly_cache_[i] = std::move(entry);
-    }
-
-    *map_ptr += *transformed_cloud_ptr;
-    if (publish_modified_map_timed_) {
-      const auto timed_update_start = std::chrono::steady_clock::now();
-      const double submap_time =
-        rclcpp::Time(map_array_msg.submaps[i].header.stamp).seconds();
-      const uint32_t submap_index = static_cast<uint32_t>(std::max(0, i));
-      if (timed_leaf_size > 0.0) {
-        for (const auto & point : transformed_cloud_ptr->points) {
-          TimedVoxelKey key;
-          key.ix = static_cast<int>(std::floor(point.x / timed_leaf_size));
-          key.iy = static_cast<int>(std::floor(point.y / timed_leaf_size));
-          key.iz = static_cast<int>(std::floor(point.z / timed_leaf_size));
-          assembled_timed_voxels_[key].add(point, submap_time, submap_index);
+      *map_ptr += *transformed_cloud_ptr;
+      if (publish_modified_map_timed_) {
+        const auto timed_update_start = std::chrono::steady_clock::now();
+        const double submap_time =
+          rclcpp::Time(map_array_msg.submaps[i].header.stamp).seconds();
+        const uint32_t submap_index = static_cast<uint32_t>(std::max(0, i));
+        if (timed_leaf_size > 0.0) {
+          for (const auto & point : transformed_cloud_ptr->points) {
+            TimedVoxelKey key;
+            key.ix = static_cast<int>(std::floor(point.x / timed_leaf_size));
+            key.iy = static_cast<int>(std::floor(point.y / timed_leaf_size));
+            key.iz = static_cast<int>(std::floor(point.z / timed_leaf_size));
+            assembled_timed_voxels_[key].add(point, submap_time, submap_index);
+          }
+        } else {
+          timed_map_points.reserve(timed_map_points.size() + transformed_cloud_ptr->size());
+          for (const auto & point : transformed_cloud_ptr->points) {
+            TimedMapPoint timed_point;
+            timed_point.x = point.x;
+            timed_point.y = point.y;
+            timed_point.z = point.z;
+            timed_point.intensity = point.intensity;
+            timed_point.time = submap_time;
+            timed_point.submap_index = submap_index;
+            timed_map_points.push_back(timed_point);
+          }
         }
-      } else {
-        timed_map_points.reserve(timed_map_points.size() + transformed_cloud_ptr->size());
-        for (const auto & point : transformed_cloud_ptr->points) {
-          TimedMapPoint timed_point;
-          timed_point.x = point.x;
-          timed_point.y = point.y;
-          timed_point.z = point.z;
-          timed_point.intensity = point.intensity;
-          timed_point.time = submap_time;
-          timed_point.submap_index = submap_index;
-          timed_map_points.push_back(timed_point);
-        }
+        assembled_timed_input_point_count_ += transformed_cloud_ptr->size();
+        timed_voxel_update_ms += elapsedMillis(timed_update_start);
       }
-      assembled_timed_input_point_count_ += transformed_cloud_ptr->size();
-      timed_voxel_update_ms += elapsedMillis(timed_update_start);
-    }
-    if (do_save_map && use_dynamic_object_filter_) {
-      dynamic_filter_submaps.push_back(
-        TimedSubmapCloud{
-          i,
-          Eigen::Vector3d(se3.translation().x(), se3.translation().y(), se3.translation().z()),
-          transformed_cloud_ptr});
+      if (do_save_map && use_dynamic_object_filter_) {
+        dynamic_filter_submaps.push_back(
+          TimedSubmapCloud{
+            i,
+            Eigen::Vector3d(se3.translation().x(), se3.translation().y(), se3.translation().z()),
+            transformed_cloud_ptr});
+      }
+
+      /* path */
+      geometry_msgs::msg::PoseStamped pose_stamped;
+      pose_stamped.header = map_array_msg.submaps[i].header;
+      pose_stamped.pose = pose;
+      path.poses.push_back(pose_stamped);
+      assembled_submap_poses_.push_back(se3);
     }
 
-    /* submap */
-    lidarslam_msgs::msg::SubMap submap;
-    submap.header = map_array_msg.submaps[i].header;
-    submap.pose = pose;
-    // Keep MapArray's declared LOCAL coordinate contract.  The previous
-    // implementation stored the already map-transformed cloud here while
-    // leaving cloud_coordinate at its default LOCAL value.  Late-joining
-    // per-submap consumers then had no safe way to reconstruct local hazard
-    // patches.  /modified_map remains the assembled global cloud above.
-    submap.cloud = *local_cloud_msg_ptr;
-    submap.cloud.header = map_array_msg.submaps[i].cloud.header;
-    modified_map_array_msg.submaps.push_back(submap);
-
-    /* path */
-    geometry_msgs::msg::PoseStamped pose_stamped;
-    pose_stamped.header = submap.header;
-    pose_stamped.pose = submap.pose;
-    path.poses.push_back(pose_stamped);
-    assembled_submap_poses_.push_back(se3);
+    if (serialize) {
+      /* submap: LOCAL coordinates, the MapArray's declared contract, so late-joining per-submap
+         consumers can reconstruct local hazard patches. /modified_map is the assembled global cloud. */
+      lidarslam_msgs::msg::SubMap submap;
+      submap.header = map_array_msg.submaps[i].header;
+      submap.pose = pose;
+      pcl::toROSMsg(*cloud_ptr, submap.cloud);
+      submap.cloud.header = map_array_msg.submaps[i].cloud.header;
+      modified_map_array_msg.submaps.push_back(submap);
+    }
   }
   assembled_submap_count_ = submaps_size;
   assembled_products_valid_ = true;
@@ -784,9 +771,6 @@ void GraphBasedSlamComponent::doPoseAdjustment(
   double timed_serialize_ms = 0.0;
   double timed_publish_call_ms = 0.0;
   double timed_cache_update_ms = 0.0;
-  const bool map_array_published =
-    !append_only || do_save_map || publish_modified_map_array_on_append_;
-
   // Invalidate hazard health before exposing a changed map-to-odom transform.
   if (hazard_mapping_ && hazard_mapping_->enabled() && submaps_size > 0) {
     std::vector<hazard::Source> sources;

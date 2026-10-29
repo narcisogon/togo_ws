@@ -59,8 +59,8 @@ Options:
   --tail S             keep SLAM running after the bag ends (default ${TAIL})
   --ready-timeout S    give up if SLAM is not subscribed after S seconds (default ${READY_TIMEOUT})
   --no-truth-path      do not run lidarslam_ros2/scripts/togo/gazebo_gt_path_publisher.py (by default it runs from
-                       before the bag starts and publishes the ground truth on /ground_truth/path, aligned to
-                       DLIO's start, for the SLAM RViz)
+                       before the bag starts and publishes the ground truth on /ground_truth/path for the SLAM
+                       RViz, anchored like the scorer; the score never uses it, and benchmark_slam.sh passes this)
   --output-in-place    let SLAM write its map / DEM where the config says (the live runs' output folder);
                        default: a copy of the config with map_save_dir and dem/output_dir pointed at
                        REPO/slam_output/replay_runs/NAME, so a replay never overwrites a live run's outputs
@@ -176,10 +176,10 @@ if [[ ${DRY_RUN} -eq 1 ]]; then
   echo "Dry run, nothing started. Would run:"
   [[ ${ISOLATE} -eq 1 ]] && echo "  copy ${CONFIG} -> ${OUT_HOST}/config.yaml with map_save_dir: ${OUT_C} and dem/output_dir: ${OUT_C}/lunar_dem"
   echo "  (cd ${REPO} && docker compose start dev)   # 'up dev -d' only if the container does not exist"
-  echo "  (cd ${REPO} && docker compose exec -T -e COMBINED_PARAM_FILE=${SLAM_CONFIG_C} -e SLAM_RVIZ=${RVIZ} dev bash -c 'echo \$\$ > ${PIDFILE}; exec bash ${SLAM_SCRIPT}') > ${RUN}/slam.log"
+  echo "  (cd ${REPO} && docker compose exec -T -e COMBINED_PARAM_FILE=${SLAM_CONFIG_C} -e SLAM_RVIZ=${RVIZ} -e SLAM_REFERENCE_PATH=false dev bash -c 'echo \$\$ > ${PIDFILE}; exec bash ${SLAM_SCRIPT}') > ${RUN}/slam.log"
   echo "  python3 ${PKG}/tools/slam_replay_check.py wait --timeout ${READY_TIMEOUT}; sleep ${START_DELAY}"
   [[ ${RECORD} -eq 1 ]] && echo "  ros2 bag record -s sqlite3 -o ${RUN}/slam_output ${REC_TOPICS[*]}"
-  [[ ${TRUTH_PATH} -eq 1 ]] && echo "  python3 ${GT_TOOL} --ros-args -p use_sim_time:=true   # /ground_truth/path"
+  [[ ${TRUTH_PATH} -eq 1 ]] && echo "  python3 ${GT_TOOL}   # /ground_truth/path (no use_sim_time: it reads no clock)"
   echo "  ros2 bag play ${BAG} ${PLAY_ARGS[*]}"
   echo "  sleep ${TAIL}; stop recorder (SIGTERM); stop SLAM (SIGINT in the container)"
   echo "  python3 ${PKG}/tools/proc_sampler.py --root-cmd run_live_seyond_dlio_slam.sh --out ${RUN}/resources.csv   # during the bag"
@@ -265,12 +265,14 @@ case "$(dc ps -a --format '{{.State}}' dev 2>/dev/null)" in
 esac
 dc exec -T dev test -f "${SLAM_SCRIPT}" || die "not found in the container: ${SLAM_SCRIPT}"
 dc exec -T dev test -f "${SLAM_CONFIG_C}" || die "not found in the container: ${SLAM_CONFIG_C}"
-# which DLIO build is measured: the binary's modification time in the container
-echo "dlio_build=$(dc exec -T dev bash -c 'b=$(find /home/er4-user/slam_ws/install -name dlio_odom_node -type f 2>/dev/null | head -n 1); [ -n "$b" ] && date -r "$b" -Iseconds')" >> "${RUN}/run_info.txt"
+# which DLIO build is measured: the binary's modification time in the container (the install is a
+# --symlink-install, so follow the link: without -L the find matched nothing and the field stayed empty)
+echo "dlio_build=$(dc exec -T dev bash -c 'b=$(find -L /home/er4-user/slam_ws/install -name dlio_odom_node -type f 2>/dev/null | head -n 1); [ -n "$b" ] && date -r "$b" -Iseconds')" >> "${RUN}/run_info.txt"
 
 # ------------------------------------------------------------------ 2. SLAM, then wait until it is subscribed
 echo "[2/5] Starting SLAM in the container (console: ${RUN}/slam.log)..."
-dc exec -T -e COMBINED_PARAM_FILE="${SLAM_CONFIG_C}" -e SLAM_RVIZ="${RVIZ}" dev \
+# SLAM_REFERENCE_PATH=false: the launch skips gazebo_pose_to_aligned_path.py (a bag has no /gazebo/dynamic_pose)
+dc exec -T -e COMBINED_PARAM_FILE="${SLAM_CONFIG_C}" -e SLAM_RVIZ="${RVIZ}" -e SLAM_REFERENCE_PATH=false dev \
   bash -c "echo \$\$ > ${PIDFILE}; exec bash ${SLAM_SCRIPT}" > "${RUN}/slam.log" 2>&1 &
 SLAM_CLIENT=$!
 if ! python3 "${PKG}/tools/slam_replay_check.py" wait --timeout "${READY_TIMEOUT}" --watch-pid "${SLAM_CLIENT}"; then
@@ -288,8 +290,9 @@ if [[ ${RECORD} -eq 1 ]]; then
   grep -q "Subscribed to topic '/dlio/odometry'" "${RUN}/record.log" || echo "WARNING: the recorder has not subscribed to /dlio/odometry yet" >&2
 fi
 if [[ ${TRUTH_PATH} -eq 1 ]]; then
-  # Must run before the bag starts: it aligns the ground truth to DLIO's first pose from its last 10 s of poses.
-  setsid python3 "${GT_TOOL}" --ros-args -p use_sim_time:=true > "${RUN}/truth_path.log" 2>&1 &
+  # Must run before the bag starts: it anchors the truth at DLIO's first real pose from the truth it buffered.
+  # No use_sim_time: it reads no clock, and with it rclpy would process every /clock message (about 1 kHz).
+  setsid python3 "${GT_TOOL}" > "${RUN}/truth_path.log" 2>&1 &
   GT_PID=$!
   for _ in $(seq 1 40); do grep -q "pose index" "${RUN}/truth_path.log" 2>/dev/null && break; sleep 0.25; done
   sleep 1

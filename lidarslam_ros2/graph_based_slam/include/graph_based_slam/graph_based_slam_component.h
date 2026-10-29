@@ -750,6 +750,10 @@ private:
     std::string pcd_cache_dir_;
     int pcd_cache_lock_fd_ {-1};
     bool use_pcd_cache_ {false};
+    // Bytes and files written to the PCD cache this run (tmpfs: RAM outside this process's RSS), for
+    // the periodic memory-store log in publishMapAndPose().
+    std::atomic<std::size_t> pcd_cache_bytes_ {0};
+    std::atomic<std::size_t> pcd_cache_files_ {0};
     /*
     Summary:
     Creates and exclusively locks a run-scoped submap PCD cache directory.
@@ -844,32 +848,9 @@ private:
     std::size_t cached_map_loop_edge_count_ {0};
     std::atomic<bool> graph_dirty_ {true};
 
-    // Per-submap incremental assembly cache for doPoseAdjustment()'s
-    // modified_map build loop. Reloading + retransforming + reserializing
-    // every submap from disk on every rebuild scales linearly with total
-    // mission length; most submaps' optimized pose doesn't change between
-    // consecutive rebuilds (no loop edges touch them), so this reuses the
-    // previously computed contribution for any submap whose pose hasn't
-    // moved beyond the epsilon below, and only redoes the expensive work for
-    // submaps that are brand new or whose pose actually changed (e.g. after
-    // an accepted loop edge). Only ever accessed from inside
-    // doPoseAdjustment(), which already holds modified_map_publish_mtx_ for
-    // its entire body -- no separate lock needed. Unbounded (one entry per
-    // submap ever created): evicting entries would defeat the point, since
-    // every submap's contribution is needed on every full-map republish
-    // regardless of how "old" it is. This roughly doubles steady-state RAM
-    // for the assembled-map data (cached transformed cloud + serialized
-    // message per submap) in exchange for O(changed submaps) instead of
-    // O(all submaps) rebuild cost.
-    struct SubmapAssemblyCacheEntry
-    {
-      Eigen::Isometry3d pose {Eigen::Isometry3d::Identity()};
-      pcl::PointCloud < pcl::PointXYZI > ::Ptr transformed_cloud;
-      // Serialized local-coordinate cloud for the modified MapArray. The
-      // transformed cloud above is used only for the assembled global map.
-      sensor_msgs::msg::PointCloud2 local_cloud_msg;
-    };
-    std::unordered_map < int, SubmapAssemblyCacheEntry > submap_assembly_cache_;
+    // (2026-10-27) The per-submap assembly cache (a transformed cloud and a serialised message per
+    // submap: two more copies of every map point) is gone. doPoseAdjustment() reads a submap's file
+    // whenever it needs the points, so only the assembled products below hold map points here.
     // Persistent aggregate products. When optimization leaves every existing
     // submap pose unchanged and only appends new submaps, doPoseAdjustment()
     // extends these instead of walking and copying the whole mission again.

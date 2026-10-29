@@ -465,3 +465,86 @@ TEST(HazardMapping, UnknownCostCombinesWithInflationAndSurvivesIncrementalCleari
     if (cleared.raw[i] < 0) {EXPECT_EQ(cleared.costs[i], 50);}
   }
 }
+
+// The 2026-10-27 plane-fit speed-ups (cells fitted in parallel, early exit of the reweighting passes when
+// every residual of the first plane is inside max_plane_error) must leave the map identical to the serial
+// three-pass fit: same slopes bit for bit, same raw classes, costs, counters and revised cells, on rough
+// terrain with rocks, noise, a steep ramp that becomes hazardous and is then flattened (so retained hazards
+// are held, re-voted and cleared), observed over several batches.
+TEST(HazardMapping, ParallelEarlyExitFitMatchesSerialThreePassFit)
+{
+  std::mt19937 rng(7);
+  std::normal_distribution<double> noise(0.0, 0.01);
+  std::uniform_real_distribution<double> uni(0.0, 1.0);
+  auto scene = [&](int batch) {  // a sloped, bumpy surface with rocks, re-observed with fresh noise
+    std::vector<Eigen::Vector3d> points;
+    const double ramp = std::tan((batch < 2 ? 32.0 : 6.0) * M_PI / 180.0);  // steep first, then flattened
+    for (int y = -60; y < 60; ++y) {
+      for (int x = -60; x < 60; ++x) {
+        const double px = (x + 0.5) * 0.05, py = (y + 0.5) * 0.05;
+        double z = -0.3 + 0.15 * px + 0.08 * std::sin(2.0 * py) + noise(rng);
+        if (px > 1.8) {z += ramp * (px - 1.8);}
+        if (std::hypot(px - 1.0, py + 0.8) < 0.3) {z += 0.35;}                       // a rock
+        if (std::hypot(px + 1.2, py - 1.1) < 0.2) {z += 0.6 * uni(rng);}             // a scattered rock
+        if (batch > 0 && std::hypot(px - 0.5, py - 1.5) < 0.25) {z -= 0.1 * batch;}  // terrain that changes
+        points.emplace_back(px, py, z);
+      }
+    }
+    return points;
+  };
+  struct Run
+  {
+    std::vector<Grid> grids;
+    std::vector<std::size_t> revised, fitted, held, cleared;
+    std::size_t bytes {0};
+  };
+  auto run = [&](int threads, bool early_exit) {
+    Config config; config.fit_threads = threads; config.fit_early_exit = early_exit;
+    IncrementalGrid map; map.reset(config);
+    rng.seed(7); noise.reset(); uni.reset();  // the same scene for both runs
+    Run out;
+    // 12 batches: a changed height needs clear_confirmations (3) candidate votes before it replaces the
+    // estimate, then a retained hazard needs 3 more confirmations of a safe slope before it clears.
+    for (int batch = 0; batch < 12; ++batch) {
+      const auto source = project(scene(batch), Eigen::Isometry3d::Identity(), Eigen::Vector3d::UnitZ(), config);
+      map.update(source, batch + 1);
+      out.grids.push_back(map.finish());
+      out.revised.push_back(map.revisedCells().size());
+      out.fitted.push_back(map.fittedCells());
+      out.held.push_back(map.heldHazards());
+      out.cleared.push_back(map.clearedHazards());
+    }
+    out.bytes = map.memoryBytes();
+    EXPECT_GT(out.bytes, map.cells() * sizeof(TerrainState));
+    return out;
+  };
+  const Run serial = run(1, false), parallel = run(4, true);
+  ASSERT_EQ(serial.grids.size(), parallel.grids.size());
+  std::size_t hazards = 0, fitted = 0, held = 0, cleared = 0;
+  for (std::size_t b = 0; b < serial.grids.size(); ++b) {
+    const Grid & a = serial.grids[b];
+    const Grid & c = parallel.grids[b];
+    EXPECT_EQ(a.raw, c.raw) << "batch " << b;
+    EXPECT_EQ(a.costs, c.costs) << "batch " << b;
+    ASSERT_EQ(a.slope_deg.size(), c.slope_deg.size());
+    for (std::size_t i = 0; i < a.slope_deg.size(); ++i) {
+      if (std::isnan(a.slope_deg[i]) || std::isnan(c.slope_deg[i])) {
+        EXPECT_TRUE(std::isnan(a.slope_deg[i]) && std::isnan(c.slope_deg[i])) << "cell " << i;
+      } else {
+        EXPECT_EQ(a.slope_deg[i], c.slope_deg[i]) << "cell " << i;
+      }
+    }
+    EXPECT_EQ(serial.fitted[b], parallel.fitted[b]);
+    EXPECT_EQ(serial.revised[b], parallel.revised[b]);
+    EXPECT_EQ(serial.held[b], parallel.held[b]);
+    EXPECT_EQ(serial.cleared[b], parallel.cleared[b]);
+    hazards += std::count(a.raw.begin(), a.raw.end(), 100);
+    fitted += serial.fitted[b]; held += serial.held[b]; cleared += serial.cleared[b];
+  }
+  // the scene must exercise every path compared above: hazards marked, held under fresh evidence, cleared
+  EXPECT_GT(hazards, 0u);
+  EXPECT_GT(held, 0u);
+  EXPECT_GT(cleared, 0u);
+  EXPECT_GT(fitted, 1000u);
+  EXPECT_EQ(serial.bytes, parallel.bytes);
+}

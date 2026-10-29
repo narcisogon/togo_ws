@@ -35,6 +35,7 @@ publication, and save requests off ROS subscription callbacks.
 */
 
 #include "graph_based_slam/graph_based_slam_component.h"
+#include "hazard/hazard_worker.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -136,6 +137,25 @@ void GraphBasedSlamComponent::publishMapAndPose()
   bool need_full_rebuild = true;
   {
     std::lock_guard<std::mutex> lock(modified_map_publish_mtx_);
+    {
+      // Memory stores, every 30 s: what grows with the mission and where. Map points are 32 B each in
+      // the assembled cloud; the PCD cache is tmpfs, RAM outside this process's RSS.
+      const std::size_t map_points = assembled_map_cloud_ ? assembled_map_cloud_->points.capacity() : 0;
+      const std::size_t timed_voxels = assembled_timed_voxels_.size();
+      const std::size_t timed_voxel_bytes =
+        timed_voxels * (sizeof(TimedVoxelKey) + sizeof(TimedVoxelAccumulator) + 32);
+      hazard::Worker::Memory hz;
+      if (hazard_mapping_ && hazard_mapping_->enabled()) {hz = hazard_mapping_->memory();}
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 30000,
+        "Memory stores: submaps=%zu map_points=%zu (%.0f MB) timed_voxels=%zu (%.0f MB) timed_msg=%.0f MB "
+        "map_array_retained=%zu submaps pcd_cache=%zu files (%.0f MB tmpfs, outside RSS) "
+        "hazard_grid=%zu cells (%.0f MB) hazard_observations=%zu cells (%.0f MB)",
+        map_array_msg.submaps.size(), map_points, map_points * sizeof(pcl::PointXYZI) / 1048576.0,
+        timed_voxels, timed_voxel_bytes / 1048576.0, cached_modified_map_timed_msg_.data.size() / 1048576.0,
+        assembled_map_array_msg_.submaps.size(), pcd_cache_files_.load(), pcd_cache_bytes_.load() / 1048576.0,
+        hz.grid_cells, hz.grid_bytes / 1048576.0, hz.observed_cells, hz.observation_bytes / 1048576.0);
+    }
     const bool unchanged =
       !graph_dirty_.load() &&
       cached_map_valid_ &&

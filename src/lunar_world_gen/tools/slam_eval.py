@@ -23,6 +23,10 @@ metrics.json sections:
                  zig-zag (cross-track error minus its 2 s average), per-leg ATE;
                  vertical_vs_climb_pct: start-anchored vertical drift fitted against the climb since the start
                  (a height scale error: + = climbs and descents exaggerated; R^2 says how much it explains);
+                 vertical_rate_vs_slope_pct: the same question per 0.5 m of travel (drift rate against the true
+                 slope), which one lap cannot confound with place: on 2026-10-28 the baseline's +3 % of the
+                 climb came with a per-segment gain near 0 and a correlation under 0.1, i.e. the drift merely
+                 happened where the slope is, so the lap-level number is not a scale error on this route;
                  heading_lag_ms: yaw error fitted against the true yaw rate in turns (> 0: the published pose
                  trails its stamp, as when an estimator corrects its current state with an older scan's pose)
   scan_matching  DLIO per-scan diagnostics: GICP time, correction size, fitness, overlap, degeneracy, drops
@@ -45,6 +49,7 @@ ASSOC_MAX_DT = 0.015          # s: for associate(); score() interpolates ground 
 RPE_DIST = 10.0               # m
 ZIGZAG_WINDOW_S = 2.0
 MOVING_SPEED = 0.05           # m/s: ground-truth speed above which the rover counts as driving
+SEGMENT_M = 0.5               # m: travel per segment for vertical_rate_vs_slope_pct
 TURN_RATE = 0.2               # rad/s: ground-truth yaw rate above which the rover counts as turning
 MIN_CLIMB = 0.5               # m: elevation range below which vertical error vs climb is not fitted
 # the place where each leg of the benchmark route (the bag's segments.json) starts; other legs keep their name
@@ -283,6 +288,21 @@ def score(est: np.ndarray, gt: np.ndarray, rpe_dist: float = RPE_DIST, segments:
         ss = float(np.sum((drift_v[:, 2] - drift_v[:, 2].mean()) ** 2))
         out["vertical_vs_climb_pct"] = round(float(k * 100), 2)
         out["vertical_vs_climb_r2"] = round(1 - float(np.sum((drift_v[:, 2] - k * climb - c) ** 2)) / ss, 3) if ss else None
+    # the same question per SEGMENT_M of travel, which a one-lap route cannot confound with position: the vertical
+    # drift rate (m per m) fitted against the true slope (rise per m). A real height scale error shows the same
+    # gain here; a gain near 0 beside a large vertical_vs_climb_pct means the drift merely happened where the
+    # slope is (the baseline lap, 2026-10-28)
+    marks = np.unique(np.searchsorted(s, np.arange(s[0], s[-1], SEGMENT_M)))
+    marks = marks[marks < len(s)]
+    if len(marks) >= 12:
+        ds = np.diff(s[marks])
+        ok = ds > SEGMENT_M / 2
+        if ok.sum() >= 10:
+            slope = np.diff(g[marks, 3])[ok] / ds[ok]
+            vrate = np.diff(drift_v[marks, 2])[ok] / ds[ok]
+            if np.ptp(slope) > 0.02 and np.all(np.isfinite(vrate)) and np.std(vrate) > 0:
+                out["vertical_rate_vs_slope_pct"] = round(float(np.polyfit(slope, vrate, 1)[0] * 100), 2)
+                out["vertical_rate_vs_slope_corr"] = round(float(np.corrcoef(slope, vrate)[0, 1]), 3)
     # heading lag: a pose that trails its stamp by tau has, in turns, a yaw error of -tau * yaw rate
     tg = np.r_[True, np.diff(gt[:, 0]) > 0]
     yaw_t = np.unwrap(yaw_of(quat_to_rot(gt[tg, 4:8])))

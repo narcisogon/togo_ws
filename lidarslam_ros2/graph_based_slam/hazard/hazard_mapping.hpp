@@ -47,6 +47,11 @@ struct Config
   int max_rays {3000};
   int max_obstacle_voxels {200000};
   std::size_t max_cells {4000000};
+  // Plane-fit execution only; neither changes the map. fit_threads: OpenMP threads for the per-cell fits
+  // in finish() (0 = all hardware threads, 1 = serial). fit_early_exit: stop the reweighting passes once
+  // every residual is inside max_plane_error, where the later passes would recompute the same plane.
+  int fit_threads {4};
+  bool fit_early_exit {true};
   void validate() const;
   bool sameTerrain(const Config & other) const;
 };
@@ -157,6 +162,8 @@ public:
   std::size_t clearedObstacles() const {return cleared_obstacles_;}
   std::size_t tracedRays() const {return traced_rays_;}
   std::size_t skippedRays() const {return skipped_rays_;}
+  std::size_t cells() const {return grid_.raw.size();}
+  std::size_t memoryBytes() const;  // heap held by the dense grid, its states and the obstacle maps
 
 private:
   void extend(const Contribution & observation);

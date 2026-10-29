@@ -514,16 +514,21 @@ COMBINED_PARAM_FILE=/home/er4-user/ws/src/lunar_world_gen/config/slam/seyond_dli
 ./src/lunar_world_gen/scripts/replay_slam_bag.sh --config <your edited copy of the lunar config>.yaml
 ```
 
-- **Ground truth in RViz:** before the bag starts, the script runs your
+- **Ground truth in RViz:** before the bag starts, the script runs
   `lidarslam_ros2/scripts/togo/gazebo_gt_path_publisher.py`. It publishes the bag's ground truth on
-  `/ground_truth/path`, aligned to DLIO's start, which is the path the SLAM RViz already displays. It has to start
-  before the bag, because it aligns on SLAM's first pose. `--no-truth-path` turns it off.
-  - It anchors on the first pose of `/dlio/path_simple`. That pose is a stamp-0 placeholder, one of those DLIO
-    publishes until its IMU calibration ends, so the tool takes the oldest truth sample it holds: 6.8 s on the
-    lap bag. DLIO only sets its frame at 9.8 s.
-  - This works only because the bag opens with a standstill, during which the rover still creeps a little. The
-    line ends up 2 mm and 0.15° from the right anchor, which is up to 8 cm sideways 30 m from the start.
-  - The scores below skip the placeholders and anchor where DLIO's frame starts.
+  `/ground_truth/path` in DLIO's odom frame, which is the path the SLAM RViz already displays. It has to start
+  before the bag, because it buffers the truth until DLIO's frame exists. `--no-truth-path` turns it off, and
+  `benchmark_slam.sh` always passes it: the score never reads this topic (it reads the bag's `ground_truth.tum`).
+  - Since 2026-10-27 it anchors exactly like the scorer: it skips DLIO's stamp-0 placeholder poses, takes the
+    first real `/dlio/odometry` pose, interpolates the truth at that stamp and applies the yaw-only transform
+    that makes the two coincide. Before, it anchored on a placeholder and the oldest truth sample it held, which
+    put the line 2 mm and 0.15° off (up to 8 cm sideways 30 m from the start) and only worked on bags that open
+    with a standstill.
+  - It is cheap now: it reads the odometry instead of the growing path, keeps a pose every 5 cm, publishes at
+    most twice a second and runs without `use_sim_time` (with it, rclpy processes every `/clock` message, about
+    1 kHz in the bags).
+  - The replay also sets `SLAM_REFERENCE_PATH=false`, so the launch skips `gazebo_pose_to_aligned_path.py`: a bag
+    carries no `/gazebo/dynamic_pose`, and the idle node still cost most of a core on the sim clock.
 - **Where results go:** `~/togo_assets/lunar/bags/slam_runs/<name>/`. That folder holds:
   - `metrics.json`;
   - the pictures `map.png`, `profile.png` and `errors.png` (see *Where it goes wrong* below);
@@ -861,6 +866,7 @@ Details:
 | `docs/USER_GUIDE.md` | what changed compared with `lunar_surface.world`; camera and physics realism notes |
 | `docs/DESIGN.md` | the design: zones, height function, rocks, meshes, collision, SDF, launch, acceptance criteria |
 | `docs/PROGRESS.md` | what was done and decided, in order; the open decisions |
+| `docs/SLAM_SPEEDUP_PLAN.md` | the plan for SLAM speed-up and accuracy work: the user's rules, the benchmark baseline per process, ranked steps, how every change is measured |
 | `config/apollo16_core.yaml` | every generator parameter |
 | `~/togo_assets/lunar/worlds/apollo16_core/reports/validation_report.md` | the validation report of your build |
 | `~/togo_assets/lunar/bags/<bag>/README.md` | each benchmark bag: how it was recorded, its route, its checks |

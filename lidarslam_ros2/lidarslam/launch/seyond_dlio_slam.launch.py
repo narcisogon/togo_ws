@@ -11,7 +11,7 @@ matching env-vars in the wrapper bash script.
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -43,6 +43,7 @@ def generate_launch_description():
     timed_cloud_scan_period          = LaunchConfiguration('timed_cloud_scan_period')
     timed_cloud_reverse_columns      = LaunchConfiguration('timed_cloud_reverse_columns')
     dlio_deskew                      = LaunchConfiguration('dlio_deskew')
+    reference_path_enabled           = LaunchConfiguration('reference_path')
     # ── New from other sim ───────────────────────────────────────────────────────
     correct_cloud_slant              = LaunchConfiguration('correct_cloud_slant')
     cloud_slant_z_correction_per_meter = LaunchConfiguration('cloud_slant_z_correction_per_meter')
@@ -162,19 +163,21 @@ def generate_launch_description():
         ],
     )
 
-    # Lightweight frontend odometry path for RViz / APE comparison.
+    # Lightweight frontend odometry path for RViz / APE comparison: a pose every
+    # 0.1 m of travel from /dlio/odometry, published at most twice a second, capped.
+    # (pose_to_path.py republished the whole 12000-pose path on every 100 Hz
+    # /dlio/pose message, which cost about a full core.)
     frontend_path = ExecuteProcess(
         cmd=[
-            'python3', '/home/er4-user/slam_ws/src/lidarslam_ros2/scripts/togo/pose_to_path.py',
+            'python3', '/home/er4-user/slam_ws/src/lidarslam_ros2/scripts/togo/odom_to_path.py',
             '--ros-args',
             '-r', '__node:=dlio_path_publisher',
-            '-p', 'pose_topic:=/dlio/pose',
+            '-p', 'odom_topic:=/dlio/odometry',
             '-p', 'path_topic:=/dlio/path_simple',
             '-p', 'fixed_frame:=odom',
             '-p', 'max_poses:=12000',
-            '-p', 'publish_every_n:=1',
-
-
+            '-p', 'min_distance_m:=0.1',
+            '-p', 'publish_period_sec:=0.5',
         ],
         output='screen',
     )
@@ -183,6 +186,9 @@ def generate_launch_description():
     # model_names and other tuning live in dlio_param_file under
     # reference_path_publisher.ros__parameters so each robot YAML
     # sets the right Gazebo model name without touching this file.
+    # Skipped with reference_path:=false (or SLAM_REFERENCE_PATH=false in the
+    # environment): bag replays carry no /gazebo/dynamic_pose, so the node would
+    # only burn CPU on the sim clock.
     reference_path = ExecuteProcess(
         cmd=[
             'python3', '/home/er4-user/slam_ws/src/lidarslam_ros2/scripts/togo/gazebo_pose_to_aligned_path.py',
@@ -191,6 +197,7 @@ def generate_launch_description():
             '--params-file', dlio_param_file,
         ],
         output='screen',
+        condition=IfCondition(reference_path_enabled),
     )
 
     # Fallback identity map->odom TF (keep false when graph_based_slam is live).
@@ -303,6 +310,13 @@ def generate_launch_description():
             'dlio_deskew',
             default_value='false',
             description='Enable DLIO per-point deskew. Off by default for husky sim stability.',
+        ),
+        DeclareLaunchArgument(
+            'reference_path',
+            default_value=EnvironmentVariable('SLAM_REFERENCE_PATH', default_value='true'),
+            description='Run gazebo_pose_to_aligned_path.py (the simulator reference path). false, or '
+                        'SLAM_REFERENCE_PATH=false in the environment, skips it: bag replays have no '
+                        '/gazebo/dynamic_pose.',
         ),
         DeclareLaunchArgument(
             'correct_cloud_slant',

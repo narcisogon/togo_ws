@@ -45,6 +45,14 @@ public:
   void receiveCloud(sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud);
   std::optional<Eigen::Isometry3d> acquisitionPose(int64_t stamp);
   void updateGraph(std::vector<Source> sources, const Eigen::Isometry3d & correction);
+  // Memory held by the worker after its last update: the dense terrain grid and the anchored
+  // observations kept for graph re-projection. Safe from any thread (atomics written by the worker).
+  struct Memory {std::size_t grid_cells {0}, grid_bytes {0}, observed_cells {0}, observation_bytes {0};};
+  Memory memory() const
+  {
+    return {mem_grid_cells_.load(), mem_grid_bytes_.load(), mem_observed_cells_.load(),
+      mem_observation_bytes_.load()};
+  }
 
 private:
   struct OdomSample {int64_t stamp; Eigen::Isometry3d pose;};
@@ -118,6 +126,8 @@ private:
   bool terrain_initialized_ {false};
   std::uint64_t terrain_config_ {0}, terrain_geometry_ {0};
   Config last_config_;
+  std::atomic<std::size_t> mem_grid_cells_ {0}, mem_grid_bytes_ {0}, mem_observed_cells_ {0},
+    mem_observation_bytes_ {0};
   double terrain_resolution_ {0.05};
   std::uint64_t completed_config_ {0}, completed_graph_ {0}, completed_cloud_ {0};
   std::uint64_t completed_geometry_ {0};

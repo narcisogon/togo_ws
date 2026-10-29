@@ -1,236 +1,239 @@
 #!/usr/bin/env python3
-"""
-Gazebo ground truth path publisher.
-Aligns Gazebo world pose to SLAM odom frame with XYZ + rotation offset.
+"""Ground truth path for RViz, in the SLAM odom frame.
+
+Takes the simulator's model pose (geometry_msgs/PoseArray, one entry per link; `pose_index` picks the body) and
+publishes it as a nav_msgs/Path aligned to DLIO's frame, so the truth overlays /dlio/path_simple in RViz.
+
+The anchoring is the one slam_eval.py scores with ("start-anchored"):
+  - DLIO's frame starts at its first REAL odometry pose; the exact-identity poses it publishes from stamp 0 until
+    its IMU calibration ends are skipped (same test as slam_eval.drop_placeholders);
+  - the truth is interpolated at that stamp (position linearly, orientation by nlerp);
+  - the yaw-only transform that makes the two coincide is applied to every later truth sample:
+        p_odom = Rz(-th0) (g - g0) + e0,   th0 = yaw(g0) - yaw(e0).
+So what RViz shows is what the scorer measures. No standstill is needed for the anchor to be right.
+
+Cheap by design: it reads /dlio/odometry (not the growing Path), keeps a bounded path with a pose every
+`min_distance_m`, publishes at most every `publish_period_sec`, and never reads a clock (every stamp comes from
+the messages), so run it WITHOUT use_sim_time (with it, rclpy would process every /clock message, about 1 kHz).
+
+    python3 gazebo_gt_path_publisher.py --ros-args -p model_topic:=/model/togo/pose -p slam_topic:=/dlio/odometry
 """
 
 from __future__ import annotations
 
+from collections import deque
 import math
+
 import rclpy
-from rclpy.node import Node
 from geometry_msgs.msg import PoseArray, PoseStamped
-from nav_msgs.msg import Path
+from nav_msgs.msg import Odometry, Path
+from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 
 def quat_multiply(q1: tuple, q2: tuple) -> tuple:
-    """Multiply two quaternions (x, y, z, w)."""
+    """Hamilton product of two quaternions (x, y, z, w): rotation q2 followed by q1."""
     x1, y1, z1, w1 = q1
     x2, y2, z2, w2 = q2
     return (
-        w1*x2 + x1*w2 + y1*z2 - z1*y2,
-        w1*y2 - x1*z2 + y1*w2 + z1*x2,
-        w1*z2 + x1*y2 - y1*x2 + z1*w2,
-        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
     )
 
-def quat_inverse(q: tuple) -> tuple:
-    """Inverse of a unit quaternion (x, y, z, w)."""
+
+def yaw_of(q: tuple) -> float:
+    """Yaw of a quaternion (x, y, z, w): atan2(R10, R00), as slam_eval.yaw_of."""
     x, y, z, w = q
-    return (-x, -y, -z, w)
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
-def yaw_from_quat(q) -> float:
-    """Extract yaw from quaternion."""
-    x = q.x; y = q.y; z = q.z; w = q.w
-    return math.atan2(2.0*(w*z + x*y), 1.0 - 2.0*(y*y + z*z))
 
-def yaw_to_quat(yaw: float) -> tuple:
-    """Convert yaw angle to quaternion (x, y, z, w)."""
+def yaw_quat(yaw: float) -> tuple:
     return (0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
 
-def rotate_point_by_yaw(x: float, y: float, yaw: float) -> tuple:
-    """Rotate a 2D point by yaw angle."""
-    cos_y = math.cos(yaw)
-    sin_y = math.sin(yaw)
-    return (
-        cos_y * x - sin_y * y,
-        sin_y * x + cos_y * y,
-    )
+
+def nlerp(qa: tuple, qb: tuple, alpha: float) -> tuple:
+    """Normalised linear interpolation between unit quaternions (shortest arc), as slam_eval.interpolate_gt."""
+    if sum(a * b for a, b in zip(qa, qb)) < 0.0:
+        qb = tuple(-v for v in qb)
+    q = tuple((1.0 - alpha) * a + alpha * b for a, b in zip(qa, qb))
+    n = math.sqrt(sum(v * v for v in q)) or 1.0
+    return tuple(v / n for v in q)
+
+
+def stamp_of(header) -> float:
+    return header.stamp.sec + header.stamp.nanosec * 1e-9
 
 
 class GazeboGroundTruthPath(Node):
     def __init__(self) -> None:
         super().__init__('gazebo_gt_path_publisher')
 
-        # ── Parameters ────────────────────────────────────────────────────────
-        self.declare_parameter('fixed_frame',  'odom')
-        self.declare_parameter('model_topic',  '/model/togo/pose')
-        self.declare_parameter('slam_topic',   '/dlio/path_simple')
+        self.declare_parameter('fixed_frame', 'odom')          # frame of the output path (DLIO's odom frame)
+        self.declare_parameter('model_topic', '/model/togo/pose')  # geometry_msgs/PoseArray from the simulator
+        self.declare_parameter('slam_topic', '/dlio/odometry')     # nav_msgs/Odometry of the frontend
         self.declare_parameter('output_topic', '/ground_truth/path')
-        self.declare_parameter('pose_index',   5)
-        self.declare_parameter('buffer_size',  500)
+        self.declare_parameter('pose_index', 5)                # entry of the PoseArray that is the body
+        self.declare_parameter('buffer_size', 500)             # truth samples kept before the anchor (48 Hz: 10 s)
+        self.declare_parameter('min_distance_m', 0.05)         # the path gets a pose every this much travel
+        self.declare_parameter('publish_period_sec', 0.5)      # publish at most this often
+        self.declare_parameter('max_poses', 20000)             # cap on the path length
 
         self.fixed_frame = self.get_parameter('fixed_frame').value
-        model_topic      = self.get_parameter('model_topic').value
-        slam_topic       = self.get_parameter('slam_topic').value
-        output_topic     = self.get_parameter('output_topic').value
-        self.pose_index  = self.get_parameter('pose_index').value
-        self.buffer_size = self.get_parameter('buffer_size').value
+        model_topic = self.get_parameter('model_topic').value
+        slam_topic = self.get_parameter('slam_topic').value
+        output_topic = self.get_parameter('output_topic').value
+        self.pose_index = int(self.get_parameter('pose_index').value)
+        buffer_size = max(2, int(self.get_parameter('buffer_size').value))
+        self.min_distance_m = max(0.0, float(self.get_parameter('min_distance_m').value))
+        publish_period = max(0.05, float(self.get_parameter('publish_period_sec').value))
+        max_poses = max(1, int(self.get_parameter('max_poses').value))
 
-        # ── State ──────────────────────────────────────────────────────────────
-        self.offset: tuple[float, float, float] | None = None
-        self.yaw_offset: float | None = None             # ✅ rotation offset
+        # Truth samples: (stamp, (x, y, z), (qx, qy, qz, qw), header.stamp of the message)
+        self.truth: deque = deque(maxlen=buffer_size)
+        # DLIO's first real pose (the anchor instant) and the resulting yaw-only alignment
+        self.anchor_stamp: float | None = None
+        self.e0: tuple | None = None
+        self.yaw_e0: float = 0.0
+        self.g0: tuple | None = None
+        self.cos_th: float = 1.0
+        self.sin_th: float = 0.0
+        self.q_corr: tuple = (0.0, 0.0, 0.0, 1.0)
+        self.warned_before_buffer = False
 
-        self.slam_initial:     tuple | None = None
-        self.slam_initial_yaw: float | None = None
-        self.slam_first_stamp: float | None = None
+        self.poses: deque = deque(maxlen=max_poses)
+        self.last_xyz: tuple | None = None
+        self.latest_stamp = None
+        self.dirty = False
 
-        # Buffer of (timestamp, (x, y, z), quaternion)
-        self.gt_pose_buffer: list = []
-
-        # ── Path ───────────────────────────────────────────────────────────────
-        self.path = Path()
-        self.path.header.frame_id = self.fixed_frame
-
-        # ── Subscribers ────────────────────────────────────────────────────────
-        self.create_subscription(PoseArray, model_topic,  self.on_gz_pose,   10)
-        self.create_subscription(Path,      slam_topic,   self.on_slam_path, 10)
-
-        # ── Publisher ──────────────────────────────────────────────────────────
-        self.pub = self.create_publisher(Path, output_topic, 10)
-
-        self.get_logger().info(
-            f'gazebo_gt_path_publisher started\n'
-            f'  model topic : {model_topic}\n'
-            f'  slam topic  : {slam_topic}\n'
-            f'  output topic: {output_topic}\n'
-            f'  fixed frame : {self.fixed_frame}\n'
-            f'  pose index  : {self.pose_index}'
-        )
-
-    # ── SLAM path callback ─────────────────────────────────────────────────────
-    def on_slam_path(self, msg: Path) -> None:
-        if self.slam_initial is not None:
-            return
-        if not msg.poses:
-            return
-
-        first = msg.poses[0]
-        p = first.pose.position
-        o = first.pose.orientation
-
-        self.slam_initial = (p.x, p.y, p.z)
-        self.slam_initial_yaw = yaw_from_quat(o)
-        self.slam_first_stamp = (
-            first.header.stamp.sec +
-            first.header.stamp.nanosec * 1e-9
-        )
+        odom_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=50, reliability=ReliabilityPolicy.BEST_EFFORT)
+        path_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.RELIABLE)
+        self.pub = self.create_publisher(Path, output_topic, path_qos)
+        self.truth_sub = self.create_subscription(PoseArray, model_topic, self.on_truth, 10)
+        self.odom_sub = self.create_subscription(Odometry, slam_topic, self.on_odom, odom_qos)
+        self.timer = self.create_timer(publish_period, self.publish_path)
 
         self.get_logger().info(
-            f'SLAM first pose  t={self.slam_first_stamp:.2f} '
-            f'x={p.x:.4f} y={p.y:.4f} z={p.z:.4f} '
-            f'yaw={math.degrees(self.slam_initial_yaw):.2f}°'
+            "gazebo_gt_path_publisher started\n"
+            f"  model topic : {model_topic}\n"
+            f"  slam topic  : {slam_topic} (nav_msgs/Odometry)\n"
+            f"  output topic: {output_topic} (at most every {publish_period:.2f} s, a pose per "
+            f"{self.min_distance_m:.3f} m, cap {max_poses})\n"
+            f"  fixed frame : {self.fixed_frame}\n"
+            f"  pose index  : {self.pose_index}"
         )
-        self.try_compute_offset()
 
-    # ── Gazebo pose callback ───────────────────────────────────────────────────
-    def on_gz_pose(self, msg: PoseArray) -> None:
+    # -- DLIO odometry: only its first real pose matters ---------------------------------------------------------
+    def on_odom(self, msg: Odometry) -> None:
+        if self.anchor_stamp is not None:
+            return
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        real = any(abs(v) > 0.0 for v in (p.x, p.y, p.z, q.x, q.y, q.z)) or q.w != 1.0
+        if not real:
+            return  # a stamp-0 placeholder published before DLIO's frame exists
+        self.anchor_stamp = stamp_of(msg.header)
+        self.e0 = (p.x, p.y, p.z)
+        self.yaw_e0 = yaw_of((q.x, q.y, q.z, q.w))
+        self.get_logger().info(
+            f"SLAM first real pose  t={self.anchor_stamp:.3f} x={p.x:.4f} y={p.y:.4f} z={p.z:.4f} "
+            f"yaw={math.degrees(self.yaw_e0):.2f} deg"
+        )
+        self.try_anchor()
+
+    # -- simulator truth -----------------------------------------------------------------------------------------
+    def on_truth(self, msg: PoseArray) -> None:
         if len(msg.poses) <= self.pose_index:
             self.get_logger().warn(
-                f'Expected at least {self.pose_index + 1} poses, '
-                f'got {len(msg.poses)}',
-                throttle_duration_sec=2.0,
-            )
+                f"Expected at least {self.pose_index + 1} poses in the PoseArray, got {len(msg.poses)}",
+                throttle_duration_sec=2.0)
             return
-
-        world_pose = msg.poses[self.pose_index]
-        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-
-        # Buffer GT pose + orientation
-        self.gt_pose_buffer.append((
-            stamp,
-            (world_pose.position.x,
-             world_pose.position.y,
-             world_pose.position.z),
-            world_pose.orientation
-        ))
-        if len(self.gt_pose_buffer) > self.buffer_size:
-            self.gt_pose_buffer.pop(0)
-
-        if self.offset is None and self.slam_first_stamp is not None:
-            self.try_compute_offset()
-
-        if self.offset is None:
-            self.get_logger().info(
-                'Buffering GT poses, waiting for SLAM first pose...',
-                throttle_duration_sec=2.0,
-            )
+        pose = msg.poses[self.pose_index]
+        sample = (stamp_of(msg.header),
+                  (pose.position.x, pose.position.y, pose.position.z),
+                  (pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w),
+                  msg.header.stamp)
+        if self.g0 is not None:
+            self.append(sample)
             return
+        self.truth.append(sample)
+        if self.anchor_stamp is not None:
+            self.try_anchor()
+        else:
+            self.get_logger().info("Buffering truth, waiting for the first real DLIO pose...",
+                                   throttle_duration_sec=5.0)
 
-        # ── Apply position offset + rotation ──────────────────────────────────
-        # Translate relative to GT origin
-        rel_x = world_pose.position.x - self.offset[0]
-        rel_y = world_pose.position.y - self.offset[1]
-        rel_z = world_pose.position.z - self.offset[2]
+    # -- anchoring ------------------------------------------------------------------------------------------------
+    def try_anchor(self) -> None:
+        """Interpolate the truth at the anchor stamp once samples on both sides of it exist."""
+        if self.g0 is not None or self.anchor_stamp is None or len(self.truth) < 2:
+            return
+        t0 = self.anchor_stamp
+        if self.truth[-1][0] < t0:
+            return  # the truth has not reached the anchor instant yet; keep buffering
+        if self.truth[0][0] > t0:
+            if not self.warned_before_buffer:
+                self.get_logger().warn(
+                    f"The first real DLIO pose (t={t0:.3f}) is older than the oldest truth sample held "
+                    f"(t={self.truth[0][0]:.3f}); anchoring on that sample instead (raise buffer_size)")
+                self.warned_before_buffer = True
+            ta, ga, qa, _ = self.truth[0]
+            tb, gb, qb = ta, ga, qa
+        else:
+            after = next(i for i, s in enumerate(self.truth) if s[0] >= t0)
+            tb, gb, qb, _ = self.truth[after]
+            ta, ga, qa, _ = self.truth[after - 1] if after > 0 else self.truth[after]
+        alpha = 0.0 if tb <= ta else (t0 - ta) / (tb - ta)
+        g0 = tuple(a + alpha * (b - a) for a, b in zip(ga, gb))
+        yaw_g0 = yaw_of(nlerp(qa, qb, alpha))
+        th0 = math.atan2(math.sin(yaw_g0 - self.yaw_e0), math.cos(yaw_g0 - self.yaw_e0))
+        self.g0 = g0
+        self.cos_th, self.sin_th = math.cos(-th0), math.sin(-th0)
+        self.q_corr = yaw_quat(-th0)
+        self.get_logger().info(
+            f"Truth at the anchor  t={t0:.3f} (interpolated between samples {ta:.3f} and {tb:.3f}) "
+            f"x={g0[0]:.4f} y={g0[1]:.4f} z={g0[2]:.4f} yaw={math.degrees(yaw_g0):.2f} deg")
+        self.get_logger().info(
+            f"Offset applied   dx={g0[0] - self.e0[0]:.4f} dy={g0[1] - self.e0[1]:.4f} "
+            f"dz={g0[2] - self.e0[2]:.4f} dyaw={math.degrees(th0):.2f} deg  "
+            f"(truth -> {self.fixed_frame}: p = Rz(-dyaw) (g - g0) + e0, same anchoring as slam_eval.py)")
+        self.destroy_subscription(self.odom_sub)
+        for sample in list(self.truth):
+            if sample[0] >= t0:
+                self.append(sample)
+        self.truth.clear()
 
-        # ✅ Rotate position by yaw offset
-        rot_x, rot_y = rotate_point_by_yaw(rel_x, rel_y, -self.yaw_offset)
-
-        # ✅ Rotate orientation by yaw offset
-        gz_quat = (
-            world_pose.orientation.x,
-            world_pose.orientation.y,
-            world_pose.orientation.z,
-            world_pose.orientation.w,
-        )
-        yaw_correction = yaw_to_quat(-self.yaw_offset)
-        corrected_quat = quat_multiply(yaw_correction, gz_quat)
-
-        # ── Build pose ────────────────────────────────────────────────────────
+    # -- output path ----------------------------------------------------------------------------------------------
+    def append(self, sample: tuple) -> None:
+        _, g, q, stamp = sample
+        rx, ry, rz = g[0] - self.g0[0], g[1] - self.g0[1], g[2] - self.g0[2]
+        xyz = (self.cos_th * rx - self.sin_th * ry + self.e0[0],
+               self.sin_th * rx + self.cos_th * ry + self.e0[1],
+               rz + self.e0[2])
+        self.latest_stamp = stamp
+        if self.last_xyz is not None and math.dist(xyz, self.last_xyz) < self.min_distance_m:
+            return
+        self.last_xyz = xyz
+        qo = quat_multiply(self.q_corr, q)
         ps = PoseStamped()
-        ps.header.stamp    = msg.header.stamp
+        ps.header.stamp = stamp
         ps.header.frame_id = self.fixed_frame
-        ps.pose.position.x = rot_x
-        ps.pose.position.y = rot_y
-        ps.pose.position.z = rel_z
-        ps.pose.orientation.x = corrected_quat[0]
-        ps.pose.orientation.y = corrected_quat[1]
-        ps.pose.orientation.z = corrected_quat[2]
-        ps.pose.orientation.w = corrected_quat[3]
+        ps.pose.position.x, ps.pose.position.y, ps.pose.position.z = xyz
+        ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z, ps.pose.orientation.w = qo
+        self.poses.append(ps)
+        self.dirty = True
 
-        self.path.poses.append(ps)
-        self.path.header.stamp = msg.header.stamp
-        self.pub.publish(self.path)
-
-    # ── Offset computation ─────────────────────────────────────────────────────
-    def try_compute_offset(self) -> None:
-        if self.slam_first_stamp is None or not self.gt_pose_buffer:
+    def publish_path(self) -> None:
+        if not self.dirty or self.latest_stamp is None:
             return
-        if self.offset is not None:
-            return
-
-        # Find GT pose closest in time to SLAM first pose
-        closest_time, closest_pos, closest_ori = min(
-            self.gt_pose_buffer,
-            key=lambda e: abs(e[0] - self.slam_first_stamp)
-        )
-
-        time_diff = abs(closest_time - self.slam_first_stamp)
-        gt_yaw = yaw_from_quat(closest_ori)
-
-        # ✅ Position offset = GT position at t0 (SLAM starts at origin)
-        self.offset = (
-            closest_pos[0],
-            closest_pos[1],
-            closest_pos[2],
-        )
-
-        # ✅ Yaw offset = difference between GT yaw and SLAM yaw at t0
-        self.yaw_offset = gt_yaw - self.slam_initial_yaw
-
-        self.get_logger().info(
-            f'GT pose matched  t={closest_time:.2f} '
-            f'(diff={time_diff:.3f}s) '
-            f'x={closest_pos[0]:.4f} y={closest_pos[1]:.4f} z={closest_pos[2]:.4f} '
-            f'yaw={math.degrees(gt_yaw):.2f}°'
-        )
-        self.get_logger().info(
-            f'Offset applied   '
-            f'dx={self.offset[0]:.4f} '
-            f'dy={self.offset[1]:.4f} '
-            f'dz={self.offset[2]:.4f} '
-            f'dyaw={math.degrees(self.yaw_offset):.2f}°'
-        )
+        path = Path()
+        path.header.stamp = self.latest_stamp
+        path.header.frame_id = self.fixed_frame
+        path.poses = list(self.poses)
+        self.pub.publish(path)
+        self.dirty = False
 
 
 def main() -> None:
@@ -238,7 +241,7 @@ def main() -> None:
     node = GazeboGroundTruthPath()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

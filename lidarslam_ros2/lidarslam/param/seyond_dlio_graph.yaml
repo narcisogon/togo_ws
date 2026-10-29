@@ -59,6 +59,7 @@ dlio_odom_node:
     odom/gicp/rotationEpsilon: 0.005                   #Rotation change threshold that stops alignment early if it settles
     odom/gicp/initLambdaFactor: 1.0e-9                 #Tiny numerical buffer added to prevent division-by-zero math error
     odom/gicp/regularizationMethod: PLANE    # FROBENIUS,NORMALIZED_MIN_EIG, MIN_EIG, PLANE, NONE
+    odom/numThreads: 6                       # OpenMP threads for GICP (covariances, linearisation) and deskew. 0 = all hardware threads (the old behaviour: 12 on the dev PC). A cap leaves cores to the backend and the helpers. [def: 0]
 
     # ── IMU setup ─────────────────────────────────────────────────────────────
     imu/calibration: true
@@ -271,6 +272,8 @@ graph_based_slam:
     hazard/max_obstacle_voxels: 200000
     hazard/batch_clouds: 3        # Process this many fresh scans, or the wait limit below.
     hazard/update_period_sec: 0.20  # Maximum wait for a partial batch (wall seconds).
+    hazard/fit_threads: 4           # OpenMP threads for the per-cell plane fits in each update. 0 = all hardware threads, 1 = serial (the behaviour before 2026-10-27). The map is the same either way. [def: 4]
+    hazard/fit_early_exit: true     # Stop the reweighting passes once every residual is inside max_plane_error_m, where the remaining passes would recompute the same plane (bit-identical result). false = always 3 passes, as before 2026-10-27. [def: true]
     hazard/max_input_age_sec: 1.0
     hazard/max_cells: 4000000
 

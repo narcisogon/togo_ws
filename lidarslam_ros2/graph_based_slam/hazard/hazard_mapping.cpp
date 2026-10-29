@@ -1,4 +1,7 @@
 #include "hazard_mapping.hpp"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #include <Eigen/Cholesky>
 #include <Eigen/Eigenvalues>
@@ -36,7 +39,8 @@ void Config::validate() const
     obstacle_max_probability >= 1 || obstacle_hit_probability <= 0.5 ||
     obstacle_hit_probability >= 1 || obstacle_miss_probability <= 0 ||
     obstacle_miss_probability >= 0.5 || max_rays < 1 || max_rays > 20000 ||
-    max_obstacle_voxels < 1 || max_obstacle_voxels > 4000000)
+    max_obstacle_voxels < 1 || max_obstacle_voxels > 4000000 ||
+    fit_threads < 0 || fit_threads > 256)
   {
     throw std::invalid_argument("invalid hazard configuration: require valid height/range, "
       "0 < slope < 90, 0 <= lethal radius < soft radius, and positive support/budget");
@@ -736,6 +740,20 @@ void IncrementalGrid::observe(const std::vector<CloudObservation> & clouds, int6
   }
 }
 
+std::size_t IncrementalGrid::memoryBytes() const
+{
+  // Heap held by this grid (capacities, not sizes, since vectors keep what they grew to). Hash maps are
+  // estimated at their node payload plus about 32 bytes of bucket and link overhead per entry.
+  std::size_t bytes = terrain_.capacity() * sizeof(TerrainState) +
+    fresh_stamps_.capacity() * sizeof(int64_t) + dirty_.capacity() * sizeof(std::uint8_t) +
+    grid_.raw.capacity() + grid_.costs.capacity() + grid_.slope_deg.capacity() * sizeof(float);
+  bytes += obstacles_.size() * (sizeof(VoxelKey) + sizeof(ObstacleState) + 32) +
+    occupied_columns_.size() * (sizeof(Key) + sizeof(int) + 32) +
+    obstacle_columns_.capacity() * sizeof(Key) + revised_.capacity() * sizeof(Key) +
+    revised_obstacles_.capacity() * sizeof(VoxelKey);
+  return bytes;
+}
+
 const Grid & IncrementalGrid::finish()
 {
   fitted_cells_ = inflated_cells_ = held_hazards_ = cleared_hazards_ = 0;
@@ -750,7 +768,6 @@ const Grid & IncrementalGrid::finish()
     }
   }
   struct Neighbor {double x, y, z, weight; bool fresh;};
-  std::vector<Neighbor> neighbors; neighbors.reserve(offsets.size());
   const double noise_variance = config_.height_noise*config_.height_noise;
   const auto coverage = [&](double xx, double xy, double yy, double sx, double sy, double sw) {
     if (sw <= 0) {return 0.0;}
@@ -760,23 +777,49 @@ const Grid & IncrementalGrid::finish()
     const double minor = 0.5*(a+d-std::hypot(a-d, 2*b));
     return std::sqrt(std::max(0.0, minor))/config_.slope_radius;
   };
-  int min_x = grid_.width, min_y = grid_.height, max_x = -1, max_y = -1;
+
+  // Phase 1 (serial): the cells to refit, in index order. A retained hazard
+  // whose cached slope is already clearly safe still needs confirmations even
+  // when fresh heights are identical. Check its center once here, rather than
+  // walking every unchanged cell's neighborhood. Reading a cell's own raw and
+  // slope here is equivalent to the former single loop: each cell is visited
+  // once, so nothing wrote them earlier in the same call.
+  std::vector<std::size_t> todo;
   for (std::size_t idx = 0; idx < dirty_.size(); ++idx) {
-    // A retained hazard whose cached slope is already clearly safe still needs
-    // confirmations even when fresh heights are identical. Check its center
-    // once here, rather than walking every unchanged cell's neighborhood.
     const bool clearing = terrain_[idx].raw == 100 &&
       grid_.slope_deg[idx] <= config_.max_slope_deg-config_.clear_slope_margin &&
       batch_stamp_ != std::numeric_limits<int64_t>::min() &&
       fresh_stamps_[idx] == batch_stamp_ && batch_stamp_ > terrain_[idx].last_vote;
     if (!dirty_[idx] && !clearing) {continue;}
     dirty_[idx] = 0;
-    auto & value = terrain_[idx];
-    if (!value.estimate.count) {continue;}
-    ++fitted_cells_;
+    if (!terrain_[idx].estimate.count) {continue;}
+    todo.push_back(idx);
+  }
+  fitted_cells_ = todo.size();
+
+  // Phase 2 (parallel over cells): the plane fit. It reads only neighbor
+  // estimates and freshness stamps, which nothing writes during finish(), and
+  // writes only its own slot of `fits`, so cells are independent. The vote,
+  // latch and raster writes stay serial in phase 3, in the same index order as
+  // before, so counters and the revised list come out identical.
+  struct Fit {bool valid {false}; double slope {0.0}; double slope_error {0.0}; int8_t raw {-1};
+    bool fresh_support {false};};
+  std::vector<Fit> fits(todo.size());
+  int threads = config_.fit_threads;
+#ifdef _OPENMP
+  if (threads <= 0) {threads = omp_get_max_threads();}
+#else
+  threads = 1;
+#endif
+  const auto todo_count = static_cast<std::ptrdiff_t>(todo.size());
+#pragma omp parallel for schedule(dynamic, 64) num_threads(threads) if(threads > 1)
+  for (std::ptrdiff_t n = 0; n < todo_count; ++n) {
+    static thread_local std::vector<Neighbor> neighbors;
+    neighbors.clear(); neighbors.reserve(offsets.size());
+    const auto idx = todo[static_cast<std::size_t>(n)];
+    const auto & value = terrain_[idx];
     const int x = idx % grid_.width, y = idx / grid_.width;
     const auto & cell = value.estimate;
-    neighbors.clear();
     double fresh_xx=0, fresh_xy=0, fresh_yy=0, fresh_x=0, fresh_y=0;
     int fresh_count=0;
     for (const auto & offset : offsets) {
@@ -810,13 +853,30 @@ const Grid & IncrementalGrid::finish()
         xz+=w*p.x*p.z; yz+=w*p.y*p.z; sz+=w*p.z;
       }
       lhs << xx, xy, sx, xy, yy, sy, sx, sy, sw;
-      Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> conditioning(lhs, Eigen::EigenvaluesOnly);
+      // Closed-form eigenvalues of the symmetric 3x3 (computeDirect) instead of the iterative solver;
+      // only the smallest one is needed, for the conditioning test.
+      Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> conditioning;
+      conditioning.computeDirect(lhs, Eigen::EigenvaluesOnly);
       valid = conditioning.info() == Eigen::Success &&
         conditioning.eigenvalues().minCoeff() >= 1e-6 &&
         coverage(xx, xy, yy, sx, sy, sw) >= config_.min_plane_coverage;
       if (valid) {
         coefficients = lhs.ldlt().solve(Eigen::Vector3d(xz, yz, sz));
         valid = coefficients.allFinite();
+      }
+      if (valid && config_.fit_early_exit && pass == 0) {
+        // Passes 2 and 3 reweight each neighbor by min(1, max_plane_error / residual) of the previous
+        // plane. When every residual of the first plane is already within the limit those factors are all
+        // exactly 1, so pass 2 would rebuild the first pass's sums and solve for the same plane, and pass 3
+        // again: stop here, same result bit for bit. (Only after the first pass: a later pass carries
+        // down-weights that an all-inside result would drop again, so its successor is not identical.)
+        bool all_inside = true;
+        for (const auto & p : neighbors) {
+          const double residual = std::abs(p.z -
+            (p.x*coefficients.x()+p.y*coefficients.y()+coefficients.z()));
+          if (residual > config_.max_plane_error) {all_inside = false; break;}
+        }
+        if (all_inside) {break;}
       }
     }
     double error=0, weight=0;
@@ -831,34 +891,47 @@ const Grid & IncrementalGrid::finish()
       valid = std::sqrt(error/weight) <= config_.max_plane_error &&
         inliers >= 0.75*neighbors.size();
     }
-    double slope = std::numeric_limits<double>::quiet_NaN();
-    double slope_error = std::numeric_limits<double>::infinity();
-    int8_t raw = -1;
+    Fit fit;
+    fit.valid = valid;
+    fit.slope = std::numeric_limits<double>::quiet_NaN();
+    fit.slope_error = std::numeric_limits<double>::infinity();
     if (valid) {
       const Eigen::Vector3d normal =
         Eigen::Vector3d(-coefficients.x(), -coefficients.y(), 1).normalized();
-      slope = std::acos(std::clamp(std::abs(normal.dot(cell.up)), 0.0, 1.0)) *
+      fit.slope = std::acos(std::clamp(std::abs(normal.dot(cell.up)), 0.0, 1.0)) *
         180.0/3.14159265358979323846;
       const Eigen::Matrix3d covariance = lhs.ldlt().solve(Eigen::Matrix3d::Identity()) *
         std::max(noise_variance, error/std::max(1.0, weight-3.0));
       // Conservative fit uncertainty proxy. Pose/gravity covariance is not
       // propagated; corrected up defines the slope reference above.
-      slope_error = std::sqrt(std::max(0.0, covariance(0,0)+covariance(1,1))) *
+      fit.slope_error = std::sqrt(std::max(0.0, covariance(0,0)+covariance(1,1))) *
         180.0/3.14159265358979323846;
-      raw = slope >= config_.max_slope_deg ? 100 :
-        (slope+2*slope_error < config_.max_slope_deg ? 0 : -1);
+      fit.raw = fit.slope >= config_.max_slope_deg ? 100 :
+        (fit.slope+2*fit.slope_error < config_.max_slope_deg ? 0 : -1);
     }
-    const bool new_evidence = fresh_stamps_[idx] == batch_stamp_ &&
-      batch_stamp_ > value.last_vote;
-    const bool fresh_support = fresh_count >= config_.min_neighbors &&
+    fit.fresh_support = fresh_count >= config_.min_neighbors &&
       fresh_count >= 0.60*neighbors.size() &&
       coverage(fresh_xx, fresh_xy, fresh_yy, fresh_x, fresh_y, fresh_count) >=
       config_.min_plane_coverage;
+    fits[static_cast<std::size_t>(n)] = fit;
+  }
+
+  // Phase 3 (serial, index order): votes, latches, counters, the revised list
+  // and the raster writes, exactly as the former loop did them.
+  int min_x = grid_.width, min_y = grid_.height, max_x = -1, max_y = -1;
+  for (std::size_t n = 0; n < todo.size(); ++n) {
+    const auto idx = todo[n];
+    auto & value = terrain_[idx];
+    const auto & fit = fits[n];
+    const int x = idx % grid_.width, y = idx / grid_.width;
+    int8_t raw = fit.raw;
+    const bool new_evidence = fresh_stamps_[idx] == batch_stamp_ &&
+      batch_stamp_ > value.last_vote;
     if (value.raw == 100) {
       raw = 100;  // Inconclusive/unknown is not evidence that a hazard disappeared.
-      if (new_evidence && fresh_support) {
+      if (new_evidence && fit.fresh_support) {
         value.last_vote = batch_stamp_;
-        if (valid && slope+2*slope_error <= config_.max_slope_deg-config_.clear_slope_margin) {
+        if (fit.valid && fit.slope+2*fit.slope_error <= config_.max_slope_deg-config_.clear_slope_margin) {
           value.clear_votes = std::min(config_.clear_confirmations, value.clear_votes+1);
           if (value.clear_votes >= config_.clear_confirmations) {
             raw = 0; value.clear_votes = 0; ++cleared_hazards_;
@@ -869,7 +942,7 @@ const Grid & IncrementalGrid::finish()
     } else if (raw == 100) {value.clear_votes = 0;}
     value.raw = raw;
     revised_.push_back({x+grid_.origin_x, y+grid_.origin_y});
-    grid_.slope_deg[idx] = static_cast<float>(slope);
+    grid_.slope_deg[idx] = static_cast<float>(fit.slope);
     const Key key{x+grid_.origin_x, y+grid_.origin_y};
     const int8_t combined = occupied_columns_.count(key) ? 100 : raw;
     if (grid_.raw[idx] != combined) {

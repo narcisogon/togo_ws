@@ -39,6 +39,8 @@ Grid-divided maps, map.pcd, and projector metadata are persistent products under
 map_save_dir.
 */
 
+#include <filesystem>
+#include <system_error>
 #include "graph_based_slam/graph_based_slam_component.h"
 
 #include <algorithm>
@@ -260,6 +262,9 @@ void GraphBasedSlamComponent::saveSubmapToPCD(
 {
   std::string path = pcd_cache_dir_ + "/submap_" + std::to_string(idx) + ".pcd";
   pcl::io::savePCDFileBinaryCompressed(path, *cloud);
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(path, ec);
+  if (!ec) {pcd_cache_bytes_ += size; ++pcd_cache_files_;}
 }
 
 /*

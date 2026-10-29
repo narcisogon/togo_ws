@@ -179,6 +179,15 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->concave_hull.setAlpha(this->keyframe_thresh_dist_);
   this->concave_hull.setKeepInformation(true);
 
+  // Thread budget (odom/numThreads): 0 keeps every hardware thread, the OpenMP default; a cap leaves
+  // cores to the backend and the helpers so a scan registration never waits for one.
+  if (this->num_threads_param_ > 0) {
+    this->num_threads_ = this->num_threads_param_;
+  }
+  this->gicp.setNumThreads(this->num_threads_);
+  this->gicp_temp.setNumThreads(this->num_threads_);
+  RCLCPP_INFO(this->get_logger(), "GICP/deskew threads: %d (odom/numThreads=%d, hardware %d)",
+      this->num_threads_, this->num_threads_param_, omp_get_max_threads());
   this->gicp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
   this->gicp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
   this->gicp.setMaximumIterations(this->gicp_max_iter_);
@@ -467,6 +476,7 @@ void dlio::OdomNode::getParams() {
   dlio::declare_param(this, "odom/gicp/initLambdaFactor", this->gicp_init_lambda_factor_, 1e-9);
   dlio::declare_param(
       this, "odom/gicp/regularizationMethod", this->gicp_regularization_method_, std::string("PLANE"));
+  dlio::declare_param(this, "odom/numThreads", this->num_threads_param_, 0);
   dlio::declare_param(this, "odom/gicp/rejectBadCorrections", this->gicp_reject_bad_corrections_, false);
   dlio::declare_param(this, "odom/gicp/maxCorrectionTranslation", this->gicp_max_correction_translation_, 0.5);
   dlio::declare_param(this, "odom/gicp/maxCorrectionRotationDeg", this->gicp_max_correction_rotation_, 20.0);
