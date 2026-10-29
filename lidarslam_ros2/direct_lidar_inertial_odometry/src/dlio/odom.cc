@@ -188,9 +188,15 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->gicp_temp.setNumThreads(this->num_threads_);
   RCLCPP_INFO(this->get_logger(), "GICP/deskew threads: %d (odom/numThreads=%d, hardware %d)",
       this->num_threads_, this->num_threads_param_, omp_get_max_threads());
+  RCLCPP_INFO(this->get_logger(),
+      "Information weighting: %s (lambda0 translation %.4g, rotation %.4g); scan-time correction: %s (history %.1f s)",
+      this->info_weighting_enabled_ ? "on" : "off", this->info_weighting_lambda0_translation_,
+      this->info_weighting_lambda0_rotation_, this->geo_correct_at_scan_time_ ? "on" : "off",
+      this->geo_state_history_sec_);
   this->gicp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
   this->gicp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
   this->gicp.setMaximumIterations(this->gicp_max_iter_);
+  this->gicp.setMinimumIterations(this->gicp_min_iter_);
   this->gicp.setTransformationEpsilon(this->gicp_transformation_ep_);
   this->gicp.setRotationEpsilon(this->gicp_rotation_ep_);
   this->gicp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
@@ -217,6 +223,7 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->gicp_temp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
   this->gicp_temp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
   this->gicp_temp.setMaximumIterations(this->gicp_max_iter_);
+  this->gicp_temp.setMinimumIterations(this->gicp_min_iter_);
   this->gicp_temp.setTransformationEpsilon(this->gicp_transformation_ep_);
   this->gicp_temp.setRotationEpsilon(this->gicp_rotation_ep_);
   this->gicp_temp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
@@ -471,12 +478,18 @@ void dlio::OdomNode::getParams() {
   dlio::declare_param(this, "odom/gicp/maxCorrespondenceDistance", this->gicp_max_corr_dist_,
       std::sqrt(std::numeric_limits<double>::max()));
   dlio::declare_param(this, "odom/gicp/maxIterations", this->gicp_max_iter_, 64);
+  dlio::declare_param(this, "odom/gicp/minIterations", this->gicp_min_iter_, 1);
   dlio::declare_param(this, "odom/gicp/transformationEpsilon", this->gicp_transformation_ep_, 0.0005);
   dlio::declare_param(this, "odom/gicp/rotationEpsilon", this->gicp_rotation_ep_, 0.0005);
   dlio::declare_param(this, "odom/gicp/initLambdaFactor", this->gicp_init_lambda_factor_, 1e-9);
   dlio::declare_param(
       this, "odom/gicp/regularizationMethod", this->gicp_regularization_method_, std::string("PLANE"));
   dlio::declare_param(this, "odom/numThreads", this->num_threads_param_, 0);
+  dlio::declare_param(this, "odom/gicp/informationWeighting/enabled", this->info_weighting_enabled_, false);
+  dlio::declare_param(this, "odom/gicp/informationWeighting/lambda0Translation",
+      this->info_weighting_lambda0_translation_, 0.0);
+  dlio::declare_param(this, "odom/gicp/informationWeighting/lambda0Rotation",
+      this->info_weighting_lambda0_rotation_, 0.0);
   dlio::declare_param(this, "odom/gicp/rejectBadCorrections", this->gicp_reject_bad_corrections_, false);
   dlio::declare_param(this, "odom/gicp/maxCorrectionTranslation", this->gicp_max_correction_translation_, 0.5);
   dlio::declare_param(this, "odom/gicp/maxCorrectionRotationDeg", this->gicp_max_correction_rotation_, 20.0);
@@ -548,12 +561,6 @@ void dlio::OdomNode::getParams() {
       this->innovation_gate_max_translation_, 0.35);
   dlio::declare_param(this, "odom/gicp/innovationGate/maxYawDeg",
       this->innovation_gate_max_yaw_, 8.0);
-  dlio::declare_param(this, "odom/gicp/degeneracyProjection/enabled",
-      this->degeneracy_projection_enabled_, true);
-  dlio::declare_param(this, "odom/gicp/degeneracyProjection/condition",
-      this->degeneracy_projection_condition_, 100000.0);
-  dlio::declare_param(this, "odom/gicp/degeneracyProjection/minScale",
-      this->degeneracy_projection_min_scale_, 0.05);
   dlio::declare_param(this, "odom/gicp/recovery/enabled", this->recovery_enabled_, true);
   dlio::declare_param(this, "odom/gicp/recovery/rejectStreak", this->recovery_reject_streak_, 3);
   dlio::declare_param(this, "odom/gicp/recovery/maxCorrespondenceDistance",
@@ -579,6 +586,8 @@ void dlio::OdomNode::getParams() {
   dlio::declare_param(this, "odom/geo/Kgb", this->geo_Kgb_, 1.0);
   dlio::declare_param(this, "odom/geo/abias_max", this->geo_abias_max_, 1.0);
   dlio::declare_param(this, "odom/geo/gbias_max", this->geo_gbias_max_, 1.0);
+  dlio::declare_param(this, "odom/geo/correctAtScanTime", this->geo_correct_at_scan_time_, false);
+  dlio::declare_param(this, "odom/geo/stateHistorySec", this->geo_state_history_sec_, 1.0);
 }
 
 void dlio::OdomNode::start() {
@@ -872,7 +881,18 @@ void dlio::OdomNode::publishDiagnostics(float status_code, float raw_points, flo
     // Pipeline watchdog (appended; existing diagnostic indices remain stable).
     static_cast<float>(this->pipeline_stage_.load()),
     static_cast<float>(this->lidar_callbacks_started_.load()),
-    static_cast<float>(this->lidar_callbacks_completed_.load())
+    static_cast<float>(this->lidar_callbacks_completed_.load()),
+    // Information weighting and scan-time correction (appended, indices 58-63; existing indices stay stable)
+    this->iw_trans_info_min_.load(),
+    this->iw_trans_info_max_.load(),
+    this->iw_rot_info_min_.load(),
+    this->iw_scale_min_.load(),
+    this->st_age_ms_.load(),
+    this->st_miss_.load(),
+    // Registration pose and the observer's reference position at the last update (appended, indices 64-69)
+    this->diag_reg_p_[0].load(), this->diag_reg_p_[1].load(), this->diag_reg_p_[2].load(),
+    this->diag_ref_p_[0].load(), this->diag_ref_p_[1].load(), this->diag_ref_p_[2].load(),
+    this->last_gicp_iterations_.load()  // index 70
   };
   this->diagnostics_pub->publish(msg);
 }
@@ -1006,8 +1026,6 @@ std::string dlio::OdomNode::diagnosticLikelyCause(const std::string& type) const
     return "dropping stale LiDAR frames so the frontend can catch up";
   } else if (type == "registration_degenerate_partial") {
     return "geometry is usable but weak; only a scaled correction was applied";
-  } else if (type == "registration_degeneracy_projected") {
-    return "Hessian indicates weak geometry; correction was damped along weak eigen-directions";
   } else if (type == "registration_innovation_partial") {
     return "GICP correction disagreed with IMU prediction; only a small correction was applied";
   } else if (type == "registration_recovery_accepted") {
@@ -2144,91 +2162,104 @@ bool dlio::OdomNode::getNextPose() {
     return scaled;
   };
 
-  auto projected_degenerate_correction =
+  // Information-weighted fusion of the correction with the IMU prior (odom/gicp/informationWeighting/*).
+  // The registration's Hessian H says how well this scan pins each direction of the pose. Expressed in the
+  // rover's own frame (H_b = Ad^T H Ad: its translation block is along / across / up and its rotation block is
+  // about the rover, not about the world origin), the fusion of the scan's optimum with the IMU prior, which
+  // sits at zero correction, is delta' = (H_b + L0)^-1 H_b delta with L0 = diag(lambda0_rot I3, lambda0_trans I3):
+  // a direction the scan constrains with information lambda keeps lambda / (lambda + lambda0) of its jump.
+  // Nothing is rejected and no threshold decides; lambda0 = 0 reproduces the plain correction exactly. The
+  // marginal information of each block (the other block's uncertainty accounted for) goes to the diagnostics.
+  auto information_weighted_correction =
     [this, &update_quality_correction_motion](const Eigen::Matrix4f& correction, GicpQuality& quality) {
-      if (!this->degeneracy_projection_enabled_ ||
-          !std::isfinite(quality.hessian_condition) ||
-          quality.hessian_condition < this->degeneracy_projection_condition_) {
+      if (!this->info_weighting_enabled_) {
         return correction;
       }
-
-      const Eigen::Matrix<double, 6, 6>& hessian = this->gicp.getFinalHessian();
-      Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double, 6, 6>> eigensolver(hessian);
-      if (eigensolver.info() != Eigen::Success) {
+      auto skew3 = [](const Eigen::Vector3d& v) {
+        Eigen::Matrix3d m;
+        m << 0.0, -v.z(), v.y(), v.z(), 0.0, -v.x(), -v.y(), v.x(), 0.0;
+        return m;
+      };
+      const Eigen::Matrix4d tp = this->T_prior.cast<double>();
+      const Eigen::Matrix3d rp =
+        Eigen::Quaterniond(Eigen::Matrix3d(tp.block<3, 3>(0, 0))).normalized().toRotationMatrix();
+      const Eigen::Vector3d pp = tp.block<3, 1>(0, 3);
+      Eigen::Matrix<double, 6, 6> ad = Eigen::Matrix<double, 6, 6>::Zero();  // delta_world = ad * delta_body
+      ad.block<3, 3>(0, 0) = rp;
+      ad.block<3, 3>(3, 0) = skew3(pp) * rp;
+      ad.block<3, 3>(3, 3) = rp;
+      Eigen::Matrix<double, 6, 6> hb = ad.transpose() * this->gicp.getFinalHessian() * ad;
+      hb = (0.5 * (hb + hb.transpose())).eval();
+      if (!hb.allFinite()) {
         return correction;
       }
-
-      const Eigen::Matrix<double, 6, 1> eigenvalues = eigensolver.eigenvalues().cwiseAbs();
-      const Eigen::Matrix<double, 6, 6> eigenvectors = eigensolver.eigenvectors();
-      const double max_eigen = eigenvalues.maxCoeff();
-      if (max_eigen <= 1e-12) {
+      const Eigen::Matrix3d hrr = hb.block<3, 3>(0, 0);
+      const Eigen::Matrix3d htt = hb.block<3, 3>(3, 3);
+      const Eigen::Matrix3d hrt = hb.block<3, 3>(0, 3);
+      const Eigen::Matrix3d i3 = Eigen::Matrix3d::Identity();
+      const Eigen::Matrix3d st =
+        htt - hrt.transpose() * (hrr + 1e-9 * std::max(1.0, hrr.trace()) * i3).ldlt().solve(hrt);
+      const Eigen::Matrix3d sr =
+        hrr - hrt * (htt + 1e-9 * std::max(1.0, htt.trace()) * i3).ldlt().solve(hrt.transpose());
+      const double l0t = std::max(0.0, this->info_weighting_lambda0_translation_);
+      const double l0r = std::max(0.0, this->info_weighting_lambda0_rotation_);
+      Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> et(st), er(sr);
+      if (et.info() == Eigen::Success && er.info() == Eigen::Success) {
+        const Eigen::Vector3d lt = et.eigenvalues().cwiseMax(0.0);
+        const Eigen::Vector3d lr = er.eigenvalues().cwiseMax(0.0);
+        this->iw_trans_info_min_ = static_cast<float>(lt.minCoeff());
+        this->iw_trans_info_max_ = static_cast<float>(lt.maxCoeff());
+        this->iw_rot_info_min_ = static_cast<float>(lr.minCoeff());
+        this->iw_scale_min_ = static_cast<float>(l0t > 0.0 ? lt.minCoeff() / (lt.minCoeff() + l0t) : 1.0);
+      }
+      if (l0t <= 0.0 && l0r <= 0.0) {
+        return correction;  // statistics only
+      }
+      // the correction in the rover's frame: T = T_corr T_prior = T_prior C_b
+      Eigen::Matrix4d tp_rigid = Eigen::Matrix4d::Identity();
+      tp_rigid.block<3, 3>(0, 0) = rp;
+      tp_rigid.block<3, 1>(0, 3) = pp;
+      Eigen::Matrix4d tp_inv = Eigen::Matrix4d::Identity();
+      tp_inv.block<3, 3>(0, 0) = rp.transpose();
+      tp_inv.block<3, 1>(0, 3) = -rp.transpose() * pp;
+      const Eigen::Matrix4d cb = tp_inv * correction.cast<double>() * tp_rigid;
+      const Eigen::AngleAxisd aa(Eigen::Quaterniond(Eigen::Matrix3d(cb.block<3, 3>(0, 0))).normalized());
+      Eigen::Matrix<double, 6, 1> delta;
+      Eigen::Vector3d omega = Eigen::Vector3d::Zero();
+      if (std::isfinite(aa.angle()) && aa.angle() > 1e-12) {
+        omega = aa.angle() * aa.axis();
+      }
+      delta.head<3>() = omega;
+      delta.tail<3>() = cb.block<3, 1>(0, 3);
+      Eigen::Matrix<double, 6, 6> l0 = Eigen::Matrix<double, 6, 6>::Zero();
+      l0.diagonal() << l0r, l0r, l0r, l0t, l0t, l0t;
+      const Eigen::Matrix<double, 6, 1> fused = (hb + l0).ldlt().solve(hb * delta);
+      if (!fused.allFinite()) {
         return correction;
       }
-
-      Eigen::AngleAxisf angle_axis(correction.block<3, 3>(0, 0));
-      double angle = angle_axis.angle();
-      Eigen::Vector3f axis = angle_axis.axis();
-      if (!std::isfinite(angle) || axis.norm() < 1e-6f) {
-        angle = 0.0;
-        axis = Eigen::Vector3f::UnitZ();
+      Eigen::Matrix4d cb_fused = Eigen::Matrix4d::Identity();
+      const double angle = fused.head<3>().norm();
+      if (angle > 1e-12) {
+        cb_fused.block<3, 3>(0, 0) = Eigen::AngleAxisd(angle, fused.head<3>() / angle).toRotationMatrix();
       }
-
-      Eigen::Matrix<double, 6, 1> dx = Eigen::Matrix<double, 6, 1>::Zero();
-      dx.head<3>() = (axis.normalized() * static_cast<float>(angle)).cast<double>();
-      dx.tail<3>() = correction.block<3, 1>(0, 3).cast<double>();
-
-      const double min_scale =
-        std::max(0.0, std::min(1.0, this->degeneracy_projection_min_scale_));
-      const double condition_threshold = std::max(1.0, this->degeneracy_projection_condition_);
-      Eigen::Matrix<double, 6, 1> projected_dx = Eigen::Matrix<double, 6, 1>::Zero();
-
-      for (int i = 0; i < 6; ++i) {
-        const double lambda = eigenvalues[i];
-        const double direction_condition =
-          lambda > 1e-12 ? max_eigen / lambda : std::numeric_limits<double>::infinity();
-        double scale = 1.0;
-        if (!std::isfinite(direction_condition) || direction_condition > condition_threshold) {
-          scale = std::isfinite(direction_condition)
-                    ? std::max(min_scale, std::min(1.0, condition_threshold / direction_condition))
-                    : min_scale;
-        }
-        projected_dx += scale * eigenvectors.col(i).dot(dx) * eigenvectors.col(i);
-      }
-
-      Eigen::Matrix4f projected = Eigen::Matrix4f::Identity();
-      const Eigen::Vector3f projected_rot = projected_dx.head<3>().cast<float>();
-      const float projected_angle = projected_rot.norm();
-      if (projected_angle > 1e-6f) {
-        projected.block<3, 3>(0, 0) =
-          Eigen::AngleAxisf(projected_angle, projected_rot / projected_angle).toRotationMatrix();
-      }
-      projected.block<3, 1>(0, 3) = projected_dx.tail<3>().cast<float>();
-
-      GicpQuality projected_quality = quality;
-      update_quality_correction_motion(projected_quality, projected);
-      std::ostringstream detail;
-      detail << "hessian eigen projection; original=" << quality.translation
-             << "m/" << quality.rotation_deg << "deg yaw=" << quality.yaw_deg
-             << " projected=" << projected_quality.translation
-             << "m/" << projected_quality.rotation_deg << "deg yaw=" << projected_quality.yaw_deg
-             << " hmin=" << quality.hessian_min_eigen
-             << " hcond=" << quality.hessian_condition;
-      this->recordDiagnosticEvent("registration_degeneracy_projected", detail.str());
-      quality = projected_quality;
-      return projected;
+      cb_fused.block<3, 1>(0, 3) = fused.tail<3>();
+      const Eigen::Matrix4f weighted = (tp_rigid * cb_fused * tp_inv).cast<float>();
+      update_quality_correction_motion(quality, weighted);
+      return weighted;
     };
 
   // Align with current submap with global IMU transformation as initial guess
   pcl::PointCloud<PointType>::Ptr aligned = std::make_shared<pcl::PointCloud<PointType>>();
   const auto solve_start = std::chrono::steady_clock::now();
   this->gicp.align(*aligned);
+  this->last_gicp_iterations_ = static_cast<float>(this->gicp.getOuterIterations());
   const double solve_ms =
     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - solve_start).count();
 
   // Get final transformation in global frame
   this->T_corr = this->gicp.getFinalTransformation(); // "correction" transformation
   GicpQuality quality = evaluate_quality(this->T_corr, solve_ms);
-  this->T_corr = projected_degenerate_correction(this->T_corr, quality);
+  this->T_corr = information_weighted_correction(this->T_corr, quality);
   double latest_imu_stamp = 0.0;
   {
     std::lock_guard<decltype(this->mtx_imu)> lock(this->mtx_imu);
@@ -3047,6 +3078,20 @@ void dlio::OdomNode::propagateState() {
   this->state.v.ang.b = this->imu_meas.ang_vel;
   this->state.v.ang.w = this->state.q.toRotationMatrix() * this->state.v.ang.b;
 
+  // History of the propagated state for the scan-time correction (odom/geo/correctAtScanTime)
+  if (this->geo_correct_at_scan_time_) {
+    StateSnapshot snap;
+    snap.stamp = this->imu_meas.stamp;
+    snap.p[0] = this->state.p[0]; snap.p[1] = this->state.p[1]; snap.p[2] = this->state.p[2];
+    snap.q[0] = this->state.q.w(); snap.q[1] = this->state.q.x();
+    snap.q[2] = this->state.q.y(); snap.q[3] = this->state.q.z();
+    this->state_history_.push_back(snap);
+    const double oldest = snap.stamp - std::max(0.1, this->geo_state_history_sec_);
+    while (!this->state_history_.empty() && this->state_history_.front().stamp < oldest) {
+      this->state_history_.pop_front();
+    }
+  }
+
 }
 
 void dlio::OdomNode::updateState() {
@@ -3061,8 +3106,56 @@ void dlio::OdomNode::updateState() {
   Eigen::Quaternionf qe, qhat, qcorr;
   qhat = this->state.q;
 
-  // Constuct error quaternion
-  qe = qhat.conjugate()*qin;
+  // Reference for the error: the current state (original DLIO) or, with odom/geo/correctAtScanTime, the
+  // state as it was at the scan's stamp, interpolated from the history propagateState() keeps. The GICP pose
+  // belongs to the scan time; measured against the state of tens of milliseconds later it pulls the estimate
+  // back toward where the rover was, a lag of the scan's age in every published pose. The error found at the
+  // scan time is applied to the current state: the world-frame position offset as is, the rotation error
+  // carried into the current body frame.
+  Eigen::Vector3f p_ref = this->state.p;
+  Eigen::Quaternionf q_ref = qhat;
+  if (this->geo_correct_at_scan_time_) {
+    bool found = false;
+    if (this->state_history_.size() >= 2 && this->state_history_.front().stamp <= this->scan_stamp &&
+        this->scan_stamp <= this->state_history_.back().stamp) {
+      auto after = std::lower_bound(this->state_history_.begin(), this->state_history_.end(), this->scan_stamp,
+        [](const StateSnapshot& s, double t) { return s.stamp < t; });
+      if (after == this->state_history_.begin()) { ++after; }
+      const StateSnapshot& b = *after;
+      const StateSnapshot& a = *std::prev(after);
+      const double span = b.stamp - a.stamp;
+      const float w = span > 1e-9
+        ? static_cast<float>(std::min(1.0, std::max(0.0, (this->scan_stamp - a.stamp) / span))) : 1.0f;
+      const Eigen::Vector3f pa(a.p[0], a.p[1], a.p[2]), pb(b.p[0], b.p[1], b.p[2]);
+      const Eigen::Quaternionf qa(a.q[0], a.q[1], a.q[2], a.q[3]), qb(b.q[0], b.q[1], b.q[2], b.q[3]);
+      p_ref = pa + w * (pb - pa);
+      q_ref = qa.slerp(w, qb).normalized();
+      found = true;
+      const double age_ms = (this->state_history_.back().stamp - this->scan_stamp) * 1000.0;
+      this->st_age_ms_ = static_cast<float>(age_ms);
+      this->st_age_sum_ms_ += age_ms;
+      ++this->st_hits_;
+    } else {
+      this->st_age_ms_ = 0.0f;
+      ++this->st_misses_;
+    }
+    this->st_miss_ = found ? 0.0f : 1.0f;
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
+      "scan-time correction: scan age at correction %.1f ms mean over %llu scans, %llu without history",
+      this->st_hits_ ? this->st_age_sum_ms_ / static_cast<double>(this->st_hits_) : 0.0,
+      static_cast<unsigned long long>(this->st_hits_), static_cast<unsigned long long>(this->st_misses_));
+  }
+
+  for (int k = 0; k < 3; ++k) {
+    this->diag_reg_p_[k] = pin[k];
+    this->diag_ref_p_[k] = p_ref[k];
+  }
+  // Constuct error quaternion (in the reference body frame, carried into the current body frame)
+  qe = q_ref.conjugate()*qin;
+  if (this->geo_correct_at_scan_time_) {
+    const Eigen::Quaternionf d = q_ref.conjugate() * qhat;  // body rotation since the scan time
+    qe = (d.conjugate() * qe * d).normalized();
+  }
 
   double sgn = 1.;
   if (qe.w() < 0) {
@@ -3074,10 +3167,10 @@ void dlio::OdomNode::updateState() {
   qcorr.vec() = sgn*qe.vec();
   qcorr = qhat * qcorr;
 
-  Eigen::Vector3f err = pin - this->state.p;
+  Eigen::Vector3f err = pin - p_ref;
   Eigen::Vector3f err_body;
 
-  err_body = qhat.conjugate()._transformVector(err);
+  err_body = q_ref.conjugate()._transformVector(err);
 
   double abias_max = this->geo_abias_max_;
   double gbias_max = this->geo_gbias_max_;

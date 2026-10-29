@@ -70,7 +70,11 @@ DIAG = {"status": 0, "raw_points": 6, "filtered_points": 7, "correction_t_m": 18
         "correction_rejected": 20, "fitness": 22, "inliers": 23, "overlap": 24, "hessian_min_eig": 25,
         "hessian_max_eig": 26, "hessian_condition": 27, "gicp_ms": 28, "spin_guard": 31, "imu_age_ms": 32,
         "timing_guard": 33, "stale_scan_drops": 43, "gc_engaged": 49, "lidar_callbacks_started": 56,
-        "lidar_callbacks_completed": 57}
+        "lidar_callbacks_completed": 57,
+        # appended by the 2026-10-29 build (information weighting, scan-time correction); absent in older bags
+        "iw_trans_info_min": 58, "iw_trans_info_max": 59, "iw_rot_info_min": 60, "iw_scale_min": 61,
+        "st_age_ms": 62, "st_miss": 63,
+        "reg_x": 64, "reg_y": 65, "reg_z": 66, "ref_x": 67, "ref_y": 68, "ref_z": 69, "gicp_iterations": 70}
 PROCESSED = (5.0, 6.0)        # status codes: registration accepted / rejected
 
 
@@ -368,6 +372,15 @@ def scan_matching(diag: np.ndarray) -> dict:
     out["inliers"] = _stats(p[:, DIAG["inliers"]], 0, (5, 50))
     out["hessian_min_eig"] = _stats(p[:, DIAG["hessian_min_eig"]], 2, (5, 50))
     out["hessian_condition"] = _stats(p[:, DIAG["hessian_condition"]], 1, (50, 95))
+    if p.shape[1] > DIAG["st_miss"]:  # the six appended fields (zeros while the switches are off)
+        out["body_trans_info_min"] = _stats(p[:, DIAG["iw_trans_info_min"]], 1, (5, 25, 50))
+        out["body_trans_info_max"] = _stats(p[:, DIAG["iw_trans_info_max"]], 1, (50,))
+        out["body_rot_info_min"] = _stats(p[:, DIAG["iw_rot_info_min"]], 1, (5, 50))
+        out["iw_scale_min"] = _stats(p[:, DIAG["iw_scale_min"]], 3, (5, 50))
+        out["scan_age_at_correction_ms"] = _stats(p[:, DIAG["st_age_ms"]], 1, (50, 95))
+        out["scan_time_misses"] = int((p[:, DIAG["st_miss"]] > 0.5).sum())
+    if p.shape[1] > DIAG["gicp_iterations"]:
+        out["gicp_iterations"] = _stats(p[:, DIAG["gicp_iterations"]], 2, (5, 50, 95))
     out["correction_mm"] = _stats(p[:, DIAG["correction_t_m"]] * 1000.0, 2, (50, 95, 99))
     out["correction_deg"] = _stats(p[:, DIAG["correction_r_deg"]], 4, (50, 95, 99))
     out["corrections_rejected"] = int((p[:, DIAG["correction_rejected"]] > 0.5).sum())

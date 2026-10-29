@@ -5,7 +5,7 @@
 # The ONLY change against the source is dlio_odom_node odom/gravity:
 #   9.82 -> 1.62 m/s^2 (the world's <gravity>; world_info.yaml gravity_m_s2).
 # Everything below this header is the source file byte for byte apart from
-# that one line (source md5 f1e457d850093f56faf48c6e3bf832c5).
+# that one line (source md5 c3fb96e31da7850424f405263a55bc2d).
 # The comment "Must match lunar_surface.world" above odom/gravity is the
 # source's own: lunar_surface.world (the Earth-gravity A/B test world) still
 # needs the unmodified source file.
@@ -80,11 +80,19 @@ dlio_odom_node:
     odom/gicp/kCorrespondences: 16        #Number of closest neighbor points checked to calculate local point shapes
     odom/gicp/maxCorrespondenceDistance: 1.0     #Maximum distance allowed between two matching points across frames
     odom/gicp/maxIterations: 46                  #Maximum alignment attempts allowed per frame before stopping
+    odom/gicp/minIterations: 1                   # Re-linearisations run before the epsilon rule may stop the alignment. 1 = plain (a prior inside the epsilons is accepted after one step). [def: 1]
     odom/gicp/transformationEpsilon: 0.005             #Position change threshold that stops alignment early if it settles
     odom/gicp/rotationEpsilon: 0.005                   #Rotation change threshold that stops alignment early if it settles
     odom/gicp/initLambdaFactor: 1.0e-9                 #Tiny numerical buffer added to prevent division-by-zero math error
     odom/gicp/regularizationMethod: PLANE    # FROBENIUS,NORMALIZED_MIN_EIG, MIN_EIG, PLANE, NONE
     odom/numThreads: 6                       # OpenMP threads for GICP (covariances, linearisation) and deskew. 0 = all hardware threads (the old behaviour: 12 on the dev PC). A cap leaves cores to the backend and the helpers. [def: 0]
+    odom/gicp/informationWeighting/enabled: true            # Fuse the GICP correction with the IMU prior by the registration's own information, in the rover's frame: a direction the scan pins with information lambda keeps lambda/(lambda+lambda0) of its jump; nothing is rejected, no threshold. false = the plain correction (original DLIO). [def: false]
+    odom/gicp/informationWeighting/lambda0Translation: 2000.0   # Prior information per body translation axis, in the Hessian's own units (the scorer's body_trans_info_min shows the scale). 0 = no weighting, statistics only. [def: 0.0]
+    odom/gicp/informationWeighting/lambda0Rotation: 0.0      # Prior information per body rotation axis, same units. 0 = no weighting. [def: 0.0]
+
+    # ── Geometric observer ────────────────────
+    odom/geo/correctAtScanTime: false        # Measure the GICP pose against the state at the scan's stamp (from the IMU propagation history) instead of the current state, then apply the error to the current state: removes the lag of the scan's age (about 40 ms) from every published pose. false = original DLIO. [def: false]
+    odom/geo/stateHistorySec: 1.0            # Seconds of propagated-state history kept for it. [def: 1.0]
 
     # ── IMU setup ─────────────────────────────────────────────────────────────
     imu/calibration: true
@@ -206,11 +214,6 @@ dlio_odom_node:
     odom/gicp/innovationGate/partialScale:   0.20
     odom/gicp/innovationGate/maxTranslation: 0.08
     odom/gicp/innovationGate/maxYawDeg:      8.0
-
-    # ── Degeneracy projection ─────────────────────────────────────────────────
-    odom/gicp/degeneracyProjection/enabled:   false
-    odom/gicp/degeneracyProjection/condition: 30000.0
-    odom/gicp/degeneracyProjection/minScale:  0.10
 
     # ── Recovery mode ─────────────────────────────────────────────────────────
     odom/gicp/recovery/enabled:                   false

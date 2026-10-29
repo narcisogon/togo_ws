@@ -351,3 +351,33 @@ Started at 00:01 on 2026-10-26 and stopped at 00:11 (the user called it a day); 
   session. The baseline adds two items the first plan lacked:
   - the path-helper scripts take about 1.6 cores, a third of all SLAM CPU;
   - the `graph_based_slam` backend's RAM grows by 315-331 MB/min.
+- **2026-10-29, SLAM plan round 2** (the plan's "Round 2" section): DLIO's unused `degeneracyProjection` removed
+  from the code and the configs; probe `kcorr10` (2 runs vs `speed`) worse (RPE 1 m +19 %, ATE max +17 %, zig-zag
+  +15 %), not kept, k = 8 skipped by the agreed rule. Next: the information-weighting and scan-time-correction
+  switches, one label each.
+- **2026-10-29, round 2 continued**: switches built (information weighting, scan-time correction; both off by
+  default, bit-identical when off). `lagfix` (2 runs vs `speed`): heading lag 38 -> -6 ms and heading error -29 %,
+  but vertical RMSE x2.5 as a 3.5-4 % height-scale error and zig-zag +18 %; not kept as is. Found on the way: the
+  observer runs with every gain at 1.0 (no `odom/geo/*` keys in the seyond configs), an undamped 1 rad/s loop;
+  `geogains` probe (DLIO upstream gains, config only) queued. `iwstats` control run confirmed the weighting
+  switch is a no-op at lambda0 = 0 and gave the information scale (weak direction p50 3612, strong 590k).
+- **2026-10-29, information weighting works**: `infoweight_t2000` (2 runs vs `speed`): ATE -23 %, RPE 10 m -16 %
+  and the slope -> plain leg -45 % beyond noise, per-scan corrections -29 %, zig-zag / vertical / CPU unchanged.
+  Kept as a candidate; a stronger value and a rotation term are queued, plus the `geogains` probe.
+- **2026-10-29, `geogains` probe** (DLIO upstream observer gains, config only, 2 runs vs `speed`): nothing improved
+  (ATE +14 %, RPE 10 m +15 %, zig-zag +5 %), not kept; the unit-gain loop is not the zig-zag's source.
+- **2026-10-29, weighting sweep**: 4000 (zig-zag -8 % but drift +61 % and a vertical excursion) and the rotation
+  term (gain halved, height scale worse) both lose to 2000 translation-only, which becomes the config default;
+  confirmation label `weighted` (3 runs) queued.
+- **2026-10-29, lag-fix probes**: the 200 s diagnostic showed the vertical scale error sits in the registration
+  (the state follows it to millimetres); `lagfix_eps` (ten times tighter GICP epsilons) halves it and halves the
+  attitude errors but costs 4x GICP time and 12 % dropped scans, not viable. Last probe queued: a minimum
+  number of GICP re-linearisations (`odom/gicp/minIterations`, new, default 1) with the lag fix.
+- **2026-10-29, `weighted` confirmation** (3 runs of the new default vs `speed`): ATE max -16 %, zig-zag -6 %,
+  corrections -30 % beyond noise; RPE 10 m -11 %; ATE median over five runs 0.143 vs 0.181 m with one drift
+  excursion (0.258) of the kind the baseline also had. Kept as the reference label.
+- **2026-10-29, round 2 closed**: `lagfix_min3` (lag fix + a minimum of 3 GICP iterations) halves the attitude
+  errors and removes the lag but costs a fifth more lateral jitter and a tenth more DLIO CPU; left as an off
+  switch with its variant config for the user's call. Kept: the information weighting as the default. The
+  plan's "Round 2 outcome" paragraph has the full list; the code goes to the user for a commit before any
+  full-filter work.

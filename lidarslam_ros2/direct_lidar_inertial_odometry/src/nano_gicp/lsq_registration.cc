@@ -53,6 +53,7 @@ template <typename PointTarget, typename PointSource>
 LsqRegistration<PointTarget, PointSource>::LsqRegistration() {
   this->reg_name_ = "LsqRegistration";
   max_iterations_ = 64;
+  min_iterations_ = 1;
   rotation_epsilon_ = 2e-3;
   transformation_epsilon_ = 5e-4;
 
@@ -82,6 +83,11 @@ void LsqRegistration<PointTarget, PointSource>::setTransformationEpsilon(double 
 template <typename PointTarget, typename PointSource>
 void LsqRegistration<PointTarget, PointSource>::setMaximumIterations(int iter) {
   max_iterations_ = iter;
+}
+
+template <typename PointTarget, typename PointSource>
+void LsqRegistration<PointTarget, PointSource>::setMinimumIterations(int iter) {
+  min_iterations_ = std::max(1, iter);
 }
 
 template <typename PointTarget, typename PointSource>
@@ -126,7 +132,10 @@ void LsqRegistration<PointTarget, PointSource>::computeTransformation(PointCloud
       break;
     }
 
-    converged_ = is_converged(delta);
+    // The epsilon rule may end the alignment only after min_iterations_ re-linearisations: a prior that is
+    // already inside the epsilons would otherwise be accepted after one step, and whatever bias it carries goes
+    // into the pose and the map unchallenged.
+    converged_ = is_converged(delta) && (i + 1 >= min_iterations_);
   }
 
   final_transformation_ = x0.cast<float>().matrix();

@@ -866,7 +866,7 @@ Details:
 | `docs/USER_GUIDE.md` | what changed compared with `lunar_surface.world`; camera and physics realism notes |
 | `docs/DESIGN.md` | the design: zones, height function, rocks, meshes, collision, SDF, launch, acceptance criteria |
 | `docs/PROGRESS.md` | what was done and decided, in order; the open decisions |
-| `docs/SLAM_SPEEDUP_PLAN.md` | the plan for SLAM speed-up and accuracy work: the user's rules, the benchmark baseline per process, ranked steps, how every change is measured |
+| `docs/SLAM_SPEEDUP_PLAN.md` | the plan for SLAM speed-up and accuracy work: the user's rules, the benchmark baseline per process, ranked steps, how every change is measured, and the measured results of round 1 (speed) and round 2 (accuracy switches), kept and rejected |
 | `config/apollo16_core.yaml` | every generator parameter |
 | `~/togo_assets/lunar/worlds/apollo16_core/reports/validation_report.md` | the validation report of your build |
 | `~/togo_assets/lunar/bags/<bag>/README.md` | each benchmark bag: how it was recorded, its route, its checks |

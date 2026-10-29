@@ -129,11 +129,13 @@ public:
   void setRotationEpsilon(double eps);
   void setTransformationEpsilon(double eps);
   void setMaximumIterations(int iter);
+  void setMinimumIterations(int iter);  // outer iterations run before the epsilon rule may stop (1 = plain)
   void setInitialLambdaFactor(double init_lambda_factor);
   void setDebugPrint(bool lm_debug_print);
 
   const Eigen::Matrix<double, 6, 6>& getFinalHessian() const;
   double getFinalError() const;
+  int getOuterIterations() const { return nr_iterations_ + 1; }  // re-linearisations of the last alignment
 
   virtual void swapSourceAndTarget() {}
   virtual void clearSource() {}
@@ -155,6 +157,7 @@ protected:
   double rotation_epsilon_;
   double transformation_epsilon_;
   int max_iterations_;
+  int min_iterations_;
 
 
   LSQ_OPTIMIZER_TYPE lsq_optimizer_type_;

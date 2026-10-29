@@ -120,11 +120,6 @@ dlio_odom_node:
     odom/gicp/innovationGate/maxTranslation: 0.20
     odom/gicp/innovationGate/maxYawDeg: 15.0
 
-    # ── Degeneracy projection ─────────────────────────────────────────────────
-    odom/gicp/degeneracyProjection/enabled:   true
-    odom/gicp/degeneracyProjection/condition: 30000.0
-    odom/gicp/degeneracyProjection/minScale:  0.10
-
     # ── Recovery mode ─────────────────────────────────────────────────────────
     odom/gicp/recovery/enabled:                 true
     odom/gicp/recovery/rejectStreak:            5

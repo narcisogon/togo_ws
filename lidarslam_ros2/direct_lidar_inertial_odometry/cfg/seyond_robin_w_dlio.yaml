@@ -118,9 +118,6 @@
     odom/gicp/innovationGate/partialScale: 0.20
     odom/gicp/innovationGate/maxTranslation: 0.08
     odom/gicp/innovationGate/maxYawDeg: 8.0
-    odom/gicp/degeneracyProjection/enabled: true
-    odom/gicp/degeneracyProjection/condition: 30000.0
-    odom/gicp/degeneracyProjection/minScale: 0.10
     odom/gicp/recovery/enabled: true
     odom/gicp/recovery/rejectStreak: 5
     odom/gicp/recovery/maxCorrespondenceDistance: 2.0

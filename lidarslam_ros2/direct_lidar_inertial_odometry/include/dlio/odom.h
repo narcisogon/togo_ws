@@ -808,11 +808,33 @@ private:
   int gicp_k_correspondences_;
   double gicp_max_corr_dist_;
   int gicp_max_iter_;
+  int gicp_min_iter_;                              // odom/gicp/minIterations
+  std::atomic<float> last_gicp_iterations_ {0.0f};  // outer GICP iterations of the last alignment
   double gicp_transformation_ep_;
   double gicp_rotation_ep_;
   double gicp_init_lambda_factor_;
   std::string gicp_regularization_method_;
   int num_threads_param_;  // odom/numThreads: OpenMP threads for GICP and deskew; 0 = all hardware threads
+  // Information-weighted fusion of the GICP correction with the IMU prior (odom/gicp/informationWeighting/*)
+  bool info_weighting_enabled_;
+  double info_weighting_lambda0_translation_;
+  double info_weighting_lambda0_rotation_;
+  std::atomic<float> iw_trans_info_min_ {0.0f};   // body-frame marginal translation information, smallest eigenvalue
+  std::atomic<float> iw_trans_info_max_ {0.0f};
+  std::atomic<float> iw_rot_info_min_ {0.0f};
+  std::atomic<float> iw_scale_min_ {1.0f};        // smallest translation scale applied this scan (1 = untouched)
+  // Correction measured against the state at the scan's stamp (odom/geo/correctAtScanTime)
+  bool geo_correct_at_scan_time_;
+  double geo_state_history_sec_;
+  struct StateSnapshot { double stamp; float p[3]; float q[4]; };   // q as w, x, y, z
+  std::deque<StateSnapshot> state_history_;   // written by propagateState(), read by updateState(), under geo.mtx
+  std::atomic<float> st_age_ms_ {0.0f};       // scan age at the correction (ms); 0 when off or without history
+  std::atomic<float> st_miss_ {0.0f};
+  uint64_t st_hits_ {0};
+  uint64_t st_misses_ {0};
+  double st_age_sum_ms_ {0.0};
+  std::atomic<float> diag_reg_p_[3] {{0.0f}, {0.0f}, {0.0f}};   // registration pose at the last update (lidarPose)
+  std::atomic<float> diag_ref_p_[3] {{0.0f}, {0.0f}, {0.0f}};   // the observer's reference position for the error
   bool gicp_reject_bad_corrections_;
   double gicp_max_correction_translation_;
   double gicp_max_correction_rotation_;
@@ -883,9 +905,6 @@ private:
   double innovation_gate_partial_scale_;
   double innovation_gate_max_translation_;
   double innovation_gate_max_yaw_;
-  bool degeneracy_projection_enabled_;
-  double degeneracy_projection_condition_;
-  double degeneracy_projection_min_scale_;
   bool recovery_enabled_;
   int recovery_reject_streak_;
   double recovery_max_correspondence_distance_;
