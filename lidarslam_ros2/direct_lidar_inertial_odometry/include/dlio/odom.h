@@ -373,6 +373,7 @@ private:
   Accepts keyframes based on translation or rotation change and updates stored poses.
   */
   void updateKeyframes();
+  bool keyframeCriterion(const Eigen::Vector3f& p, const Eigen::Quaternionf& q);  // the keyframe decision for a pose
 
   /*
   Summary:
@@ -809,6 +810,7 @@ private:
   double gicp_max_corr_dist_;
   int gicp_max_iter_;
   int gicp_min_iter_;                              // odom/gicp/minIterations
+  bool geo_scan_time_horizontal_only_;   // odom/geo/scanTimeHorizontalOnly
   std::atomic<float> last_gicp_iterations_ {0.0f};  // outer GICP iterations of the last alignment
   double gicp_transformation_ep_;
   double gicp_rotation_ep_;
@@ -819,6 +821,7 @@ private:
   bool info_weighting_enabled_;
   double info_weighting_lambda0_translation_;
   double info_weighting_lambda0_rotation_;
+  std::string info_weighting_mode_;   // "final": fuse the final delta; "solver": prior term in every GICP system
   std::atomic<float> iw_trans_info_min_ {0.0f};   // body-frame marginal translation information, smallest eigenvalue
   std::atomic<float> iw_trans_info_max_ {0.0f};
   std::atomic<float> iw_rot_info_min_ {0.0f};

@@ -130,6 +130,10 @@ public:
   void setTransformationEpsilon(double eps);
   void setMaximumIterations(int iter);
   void setMinimumIterations(int iter);  // outer iterations run before the epsilon rule may stop (1 = plain)
+  // Prior information (6x6, world-frame left perturbation, rotation then translation) added to every linear
+  // system: the alignment then minimises the GICP cost plus 1/2 xi^T info xi, xi being the correction accumulated
+  // from the initial guess. Zero (the default) switches it off.
+  void setPriorInformation(const Eigen::Matrix<double, 6, 6>& info);
   void setInitialLambdaFactor(double init_lambda_factor);
   void setDebugPrint(bool lm_debug_print);
 
@@ -158,6 +162,11 @@ protected:
   double transformation_epsilon_;
   int max_iterations_;
   int min_iterations_;
+  Eigen::Matrix<double, 6, 6> prior_info_;
+  bool prior_enabled_;
+  Eigen::Isometry3d prior_pose_;   // the initial guess of the current alignment
+  Eigen::Matrix<double, 6, 1> prior_residual(const Eigen::Isometry3d& x0) const;
+  double prior_cost(const Eigen::Isometry3d& x0) const;
 
 
   LSQ_OPTIMIZER_TYPE lsq_optimizer_type_;

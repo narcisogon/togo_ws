@@ -209,6 +209,105 @@ correction (with `minIterations` as its companion) and the six plus one appended
 jumps; its remaining candidates are the registration's own scatter and the deskew/prior. The full filter and
 voxel map (Step 4.4) are untouched; by the stop rule, the state is handed to the user for a commit first.
 
+## Round 3 (from 2026-10-29): new ideas as switches, one label each
+
+The user's instruction: build the untested ideas as toggles and go down the list; no voxel-size probe; anything
+that fixes the lag fix's ratchet is welcome. Switches coded 2026-10-29, all off by default, each with a one-key
+variant config and a 2-run label against `weighted`: (1) `odom/gicp/informationWeighting/mode: solver`, the same
+prior information added to every Gauss-Newton / LM system inside nano_gicp (`setPriorInformation`), with the LM
+gain ratio comparing consistent costs; (2) `informationWeighting/scaleWithCorrespondences`, lambda0 as a ratio of
+the alignment's pair count (lambda0 * n / 3600); (4) `odom/gicp/refineDistance`, a second alignment stage that
+continues from the first result with a 0.5 m search radius while the solver prior stays pinned at the original
+guess (`setPriorPose`); (3) `odom/keyframe/refineEpsilon`, full convergence only on the scans that become
+keyframes (the keyframe decision is factored into `keyframeCriterion(p, q)`, shared with `updateKeyframes()`), so
+an early-stopped alignment cannot ratchet the map; (5) `odom/geo/scanTimeHorizontalOnly`, the scan-time
+correction with z referenced to the current state. Queued, not coded: (6) an iterated Kalman update in place
+of the observer.
+
+- `lagfix_min3_gc` (2 runs, 2026-10-29 02:17-02:30, the lag fix with the existing ground constraint on): WORSE on
+  everything that matters and removed. The constraint engaged on about 2250 of 7000 scans; ATE 0.181 -> 0.329 m
+  (+82 %), vertical RMSE 0.023 -> 0.052 m, RPE 1 m +21 %, RPE 10 m +35 %, heading error +41 %. Its design explains
+  it: it anchors the ground height under the rover to one fixed value with no tracking and gates on the ground
+  normal's tilt in the world frame, so on this lap it is off on the slopes and wrong wherever the plain is not at
+  the start's height. Not a candidate for the ratchet.
+
+- (1) `iw_solver` (2 runs, 2026-10-29 10:36-10:50, weighting inside the solver, lambda0 2000): KEPT, now the
+  default (`informationWeighting/mode: solver`). Against `weighted`: ATE 0.181 -> 0.141 m (-22 %, spread 0.004),
+  per-scan correction -17 % (p95 -14 %), pitch error -14 %, RPE 1 m rotation -8 %, heading lag 38 -> 34 ms;
+  zig-zag, vertical, RPE 1 m / 10 m translation unchanged. Cost went the right way: GICP 10.4 -> 6.9 ms (-34 %,
+  p95 -41 %), DLIO CPU 118 -> 96 % (-18 %), all SLAM CPU -8 %: the prior term conditions the system, so the LM
+  loop rejects fewer steps. One diagnostic caveat: in solver mode the reported Hessian included the prior term
+  (hence the inflated "information +138 %" row); fixed the same day so the diagnostics report the scan's
+  information alone (`H_gicp` in both step functions).
+- (2) `iw_perpoint` (2 runs, 10:50-11:03, lambda0 scaled by the pair count): NEUTRAL, not adopted. ATE 0.180,
+  zig-zag and RPE unchanged, vertical -22 % and GICP -11 % inside noise; the factor n / 3600 sits near 1 on this
+  bag (about 3570 pairs per scan), so the switch changes little here. Code to be removed at the round's cleanup.
+- (4) `refine05` (2 runs, 11:03-11:17, second stage at 0.5 m): WORSE, removed. Zig-zag +15 %, GICP 10.4 -> 18.6 ms,
+  DLIO CPU +44 %, attitude errors +14-19 %, overlap 0.98 -> 0.94: at 10-20 m the scan's rings sit more than
+  0.5 m apart on the ground, so the tighter radius drops the ground pairs, information falls, not noise.
+
+- (3) `kfrefine` (2 runs, 2026-10-29 11:22-11:35, full convergence on keyframe scans, on the solver-mode
+  default): NOT kept on its own. 780 of 6980 scans refined (11 %); zig-zag p95 -6 % is the only row beyond noise
+  in its favour; ATE 0.141 -> 0.171 m (+21 %, inside the spread), heading lag 34 -> 41 ms (+19 %, the refinement
+  adds latency on those scans), GICP 6.9 -> 9.1 ms (+33 %), DLIO CPU +14 %. (The information rows of this
+  comparison are not comparable: the `iw_solver` runs still reported the prior-inflated Hessian.) Its target
+  was the lag fix's ratchet, which the minimum-iterations guard already tames, so it is removed unless the
+  horizontal-only lag-fix run shows the vertical still needs it.
+- Incident 2026-10-29: the machine suspended at about 11:40, right after the `lagfix_min3_h` run started, and
+  resumed at 19:57; the run (an eight-hour gap inside a 364 s replay) was stopped by PID and deleted, the
+  replay's interrupt path left the SLAM nodes alive in the container (stopped by PID too), and the 3-run
+  reference `solver` plus `lagfix_min3_h` were relaunched with a keep-awake process holding the machine.
+
+- `solver` (3 runs, 2026-10-29 20:05-20:25, the new default: weighting in the solver, lambda0 2000), against the
+  round-1 `speed` label, the REFERENCE from here on. Beyond noise: RPE 1 m 0.109 -> 0.103 m (-6 %), RPE 10 m
+  1.79 -> 1.52 % (-15 %), zig-zag 0.055 -> 0.050 m (-9 %, p95 -9 %), per-scan correction 106 -> 62 mm (-41 %),
+  GICP 9.8 -> 7.5 ms (-23 %, p95 -29 %), DLIO CPU 116 -> 101 % (-13 %), all SLAM CPU -5 %. Inside noise: ATE
+  0.181 -> 0.168 m (runs 0.181 / 0.175 / 0.149), heading error -21 %, heading lag -12 %, vertical 0.020 m.
+  Flagged worse: one vertical peak (+11 mm) and fitness +1 %. The zig-zag moved for the first time: the prior
+  inside every iteration damps the weak-direction scatter at its source, where the one-step fusion could not.
+- (5) `lagfix_min3_h` (2 runs, 20:25-20:38, scan-time correction with z referenced to the current state, plus
+  the 3-iteration minimum, on the solver-mode base, against `iw_solver`): the first lag-fix variant to pass the
+  accuracy guard. Heading lag 34 -> -5 ms, heading error 0.528 -> 0.297 deg (-44 %), roll -52 %, pitch -46 %,
+  RPE 1 m rotation -52 %, RPE 10 m -5 % (better), ATE max -18 %, ATE 0.141 -> 0.138, vertical equal, zig-zag
+  0.050 -> 0.054 (+8 %, inside noise). Costs: RPE 1 m translation +8 %, the start -> rocks leg +24 mm, GICP
+  6.9 -> 8.4 ms (the minimum iterations), DLIO CPU 96 -> 108 %. (The information rows of this comparison are
+  the prior-inflated ones of the `iw_solver` runs, not comparable.) Whether the horizontal-only hedge is what
+  makes it pass is measured next with the full scan-time correction on the same base.
+
+- `lagfix_min3` on the solver base (2 runs, 2026-10-29 20:39-20:53, the full scan-time correction; the morning's
+  two runs on the final-mode base were relabelled `lagfix_min3_finalbase` so the label is clean): the same
+  attitude gains as the horizontal-only variant (heading -42 %, roll -43 %, pitch -52 %, lag -5 ms) but it
+  fails the guard: zig-zag 0.050 -> 0.057 m (+14 %), RPE 1 m +15 %. Side by side with `lagfix_min3_h` on the
+  same base: RPE 1 m 6 % worse, zig-zag +6 %, everything else equal, so keeping z on the current-state reference
+  is what makes the lag fix pass.
+- DECISION 2026-10-29 21:00: `odom/geo/correctAtScanTime: true`, `odom/geo/scanTimeHorizontalOnly: true` and
+  `odom/gicp/minIterations: 3` become the defaults, pending a 3-run confirmation (`round3`) against `solver`;
+  if the confirmation fails the guard, they go back to off and stay as switches. Removed from the code and the
+  configs: the pair-count scaling, the 0.5 m second stage, the keyframe-time refinement and nano_gicp's prior
+  pin (`setPriorPose`); `keyframeCriterion(p, q)` stays as a plain factoring of `updateKeyframes()`. No variant
+  configs remain: every kept switch is a key in `seyond_dlio_graph.yaml`.
+
+- `round3` (3 runs, 2026-10-29 21:00-21:20, the solver-mode default plus the horizontal-only scan-time correction
+  and the 3-iteration minimum), against `solver`: the trade holds its shape with three runs and the guard now
+  bites. Better beyond noise: roll error 0.146 -> 0.092 deg (-37 %), heading lag 34 -> -6 ms, RPE 1 m rotation
+  -50 %, RPE 10 m rotation -34 %. Inside noise: ATE 0.168 -> 0.146 m (-13 %; runs 0.150 / 0.133 / 0.156),
+  along-track -18 %, heading error -15 %, pitch -32 %, vertical -6 %, RPE 10 m -2 %. Worse beyond noise: zig-zag
+  0.050 -> 0.054 m (+9 %, p95 +10 %), RPE 1 m translation 0.103 -> 0.115 m (+11 %), GICP 7.5 -> 8.7 ms, DLIO CPU
+  101 -> 109 %. Against the round-1 `speed` label the same configuration is equal or better on every guarded
+  row (zig-zag -1 %, RPE 1 m +5 % inside noise, RPE 10 m -16 %, ATE -19 %, attitude -37 to -53 %, GICP -12 %).
+
+**Round 3 outcome (2026-10-29 21:30).** Kept as the default: the weighting inside the solver
+(`informationWeighting/mode: solver`), which is the round-3 reference `solver`: against `speed`, RPE 1 m -6 %,
+RPE 10 m -15 %, zig-zag -9 %, corrections -41 %, GICP -23 %, DLIO CPU -13 %, all beyond noise. Built, measured and
+left as one config change, OFF by the accuracy guard ("unless the user accepts the trade"): the scan-time
+correction with z on the current-state reference plus `minIterations: 3`, in
+`config/slam/variants/seyond_dlio_graph_lunar__lagfix.yaml` (three keys). It removes the lag and halves the
+attitude errors for +9 % zig-zag and +11 % RPE 1 m against the reference. Rejected and removed: the pair-count
+scaling, the 0.5 m second stage, the keyframe-time refinement, the ground constraint on this terrain. Not
+started: the iterated Kalman update (switch 6); it is now the only item left on the list, and both measured
+mechanisms it would unify (prior-trust, scan-time attitude) are in hand. The 0.3-0.5 m lateral zig-zag is down
+to about 50 mm from 55 and remains the floor set by the plains' weak-direction scatter.
+
 More results are appended as the labels finish.
 
 

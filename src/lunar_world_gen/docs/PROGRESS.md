@@ -381,3 +381,24 @@ Started at 00:01 on 2026-10-26 and stopped at 00:11 (the user called it a day); 
   switch with its variant config for the user's call. Kept: the information weighting as the default. The
   plan's "Round 2 outcome" paragraph has the full list; the code goes to the user for a commit before any
   full-filter work.
+- **2026-10-29, round 3 opened**: new ideas built as switches (solver-side weighting, correspondence-scaled
+  lambda0, two-stage correspondences), labels queued. The existing ground constraint on the lag fix: worse on
+  every row (ATE +82 %), rejected; its fixed-height anchor does not fit sloped terrain.
+- **2026-10-29, solver-side weighting kept**: `iw_solver` (2 runs vs `weighted`): ATE -22 % with a tight spread,
+  corrections -17 %, GICP time -34 %, DLIO CPU -18 %, nothing worse; now the default (`mode: solver`). The
+  pair-count scaling is neutral, the 0.5 m second stage is worse (drops ground pairs at range); both dropped.
+- **2026-10-29, keyframe-time refinement**: not kept on its own (nothing better beyond noise, heading lag +19 %,
+  GICP +33 %); the machine suspended for eight hours mid-chain, the broken run was discarded and the reference
+  and lag-fix labels relaunched.
+- **2026-10-29, new reference `solver`** (3 runs vs `speed`): RPE 1 m -6 %, RPE 10 m -15 %, zig-zag -9 %,
+  corrections -41 %, GICP time -23 %, DLIO CPU -13 %, all beyond noise. The horizontal-only scan-time
+  correction with a 3-iteration minimum passes the accuracy guard on this base (attitude errors halved, lag
+  gone, RPE 1 m +8 %, CPU +12 %); the full version is being measured on the same base before the choice.
+- **2026-10-29, lag fix adopted as a default (pending confirmation)**: the full scan-time correction fails the
+  guard (zig-zag +14 %), the horizontal-only one passes with the same halved attitude errors; it becomes the
+  default with the 3-iteration minimum. Rejected switches removed from the code; no variant configs remain.
+- **2026-10-29, round 3 closed**: `round3` (3 runs) confirms the lag-fix trade (attitude errors -37 to -50 %, lag
+  gone, zig-zag +9 % and RPE 1 m +11 % against the reference); by the guard it stays off, one config change away
+  (`variants/seyond_dlio_graph_lunar__lagfix.yaml`). Default = solver-mode weighting (`solver` reference: RPE
+  10 m -15 %, zig-zag -9 %, GICP -23 % vs `speed`). Rejected switches removed; the Kalman update is the only
+  list item left. Tree handed to the user for a commit.

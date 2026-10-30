@@ -189,8 +189,8 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   RCLCPP_INFO(this->get_logger(), "GICP/deskew threads: %d (odom/numThreads=%d, hardware %d)",
       this->num_threads_, this->num_threads_param_, omp_get_max_threads());
   RCLCPP_INFO(this->get_logger(),
-      "Information weighting: %s (lambda0 translation %.4g, rotation %.4g); scan-time correction: %s (history %.1f s)",
-      this->info_weighting_enabled_ ? "on" : "off", this->info_weighting_lambda0_translation_,
+      "Information weighting: %s, mode %s (lambda0 translation %.4g, rotation %.4g); scan-time correction: %s (history %.1f s)",
+      this->info_weighting_enabled_ ? "on" : "off", this->info_weighting_mode_.c_str(), this->info_weighting_lambda0_translation_,
       this->info_weighting_lambda0_rotation_, this->geo_correct_at_scan_time_ ? "on" : "off",
       this->geo_state_history_sec_);
   this->gicp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
@@ -490,6 +490,12 @@ void dlio::OdomNode::getParams() {
       this->info_weighting_lambda0_translation_, 0.0);
   dlio::declare_param(this, "odom/gicp/informationWeighting/lambda0Rotation",
       this->info_weighting_lambda0_rotation_, 0.0);
+  dlio::declare_param(this, "odom/gicp/informationWeighting/mode", this->info_weighting_mode_, std::string("final"));
+  if (this->info_weighting_mode_ != "final" && this->info_weighting_mode_ != "solver") {
+    RCLCPP_WARN(this->get_logger(), "odom/gicp/informationWeighting/mode '%s' unknown, using 'final'",
+                this->info_weighting_mode_.c_str());
+    this->info_weighting_mode_ = "final";
+  }
   dlio::declare_param(this, "odom/gicp/rejectBadCorrections", this->gicp_reject_bad_corrections_, false);
   dlio::declare_param(this, "odom/gicp/maxCorrectionTranslation", this->gicp_max_correction_translation_, 0.5);
   dlio::declare_param(this, "odom/gicp/maxCorrectionRotationDeg", this->gicp_max_correction_rotation_, 20.0);
@@ -588,6 +594,7 @@ void dlio::OdomNode::getParams() {
   dlio::declare_param(this, "odom/geo/gbias_max", this->geo_gbias_max_, 1.0);
   dlio::declare_param(this, "odom/geo/correctAtScanTime", this->geo_correct_at_scan_time_, false);
   dlio::declare_param(this, "odom/geo/stateHistorySec", this->geo_state_history_sec_, 1.0);
+  dlio::declare_param(this, "odom/geo/scanTimeHorizontalOnly", this->geo_scan_time_horizontal_only_, false);
 }
 
 void dlio::OdomNode::start() {
@@ -2212,8 +2219,8 @@ bool dlio::OdomNode::getNextPose() {
         this->iw_rot_info_min_ = static_cast<float>(lr.minCoeff());
         this->iw_scale_min_ = static_cast<float>(l0t > 0.0 ? lt.minCoeff() / (lt.minCoeff() + l0t) : 1.0);
       }
-      if (l0t <= 0.0 && l0r <= 0.0) {
-        return correction;  // statistics only
+      if ((l0t <= 0.0 && l0r <= 0.0) || this->info_weighting_mode_ == "solver") {
+        return correction;  // statistics only (lambda0 = 0), or the solver already fused (mode solver)
       }
       // the correction in the rover's frame: T = T_corr T_prior = T_prior C_b
       Eigen::Matrix4d tp_rigid = Eigen::Matrix4d::Identity();
@@ -2247,6 +2254,33 @@ bool dlio::OdomNode::getNextPose() {
       update_quality_correction_motion(quality, weighted);
       return weighted;
     };
+
+  // Solver-side weighting (informationWeighting/mode: solver): the same body-frame prior information, carried
+  // into nano_gicp's world-frame parameterisation (L0_w = Ad^-T L0_b Ad^-1) and added to every linear system of
+  // the alignment, so the stop rule and the prior-trust act on the same problem. Zero when off.
+  {
+    Eigen::Matrix<double, 6, 6> prior_world = Eigen::Matrix<double, 6, 6>::Zero();
+    const double l0t = std::max(0.0, this->info_weighting_lambda0_translation_);
+    const double l0r = std::max(0.0, this->info_weighting_lambda0_rotation_);
+    if (this->info_weighting_enabled_ && this->info_weighting_mode_ == "solver" && (l0t > 0.0 || l0r > 0.0)) {
+      const Eigen::Matrix4d tp = this->T_prior.cast<double>();
+      const Eigen::Matrix3d rp =
+        Eigen::Quaterniond(Eigen::Matrix3d(tp.block<3, 3>(0, 0))).normalized().toRotationMatrix();
+      const Eigen::Vector3d pp = tp.block<3, 1>(0, 3);
+      Eigen::Matrix3d skew_p;
+      skew_p << 0.0, -pp.z(), pp.y(), pp.z(), 0.0, -pp.x(), -pp.y(), pp.x(), 0.0;
+      // Ad(T)^-1 = Ad(T^-1): rotation R^T, coupling -R^T [p]x
+      Eigen::Matrix<double, 6, 6> ad_inv = Eigen::Matrix<double, 6, 6>::Zero();
+      ad_inv.block<3, 3>(0, 0) = rp.transpose();
+      ad_inv.block<3, 3>(3, 0) = -rp.transpose() * skew_p;
+      ad_inv.block<3, 3>(3, 3) = rp.transpose();
+      Eigen::Matrix<double, 6, 6> l0b = Eigen::Matrix<double, 6, 6>::Zero();
+      l0b.diagonal() << l0r, l0r, l0r, l0t, l0t, l0t;
+      prior_world = ad_inv.transpose() * l0b * ad_inv;
+      prior_world = (0.5 * (prior_world + prior_world.transpose())).eval();
+    }
+    this->gicp.setPriorInformation(prior_world);
+  }
 
   // Align with current submap with global IMU transformation as initial guess
   pcl::PointCloud<PointType>::Ptr aligned = std::make_shared<pcl::PointCloud<PointType>>();
@@ -3130,6 +3164,9 @@ void dlio::OdomNode::updateState() {
       const Eigen::Quaternionf qa(a.q[0], a.q[1], a.q[2], a.q[3]), qb(b.q[0], b.q[1], b.q[2], b.q[3]);
       p_ref = pa + w * (pb - pa);
       q_ref = qa.slerp(w, qb).normalized();
+      if (this->geo_scan_time_horizontal_only_) {
+        p_ref[2] = this->state.p[2];  // z keeps the current state as its reference (today's behaviour)
+      }
       found = true;
       const double age_ms = (this->state_history_.back().stamp - this->scan_stamp) * 1000.0;
       this->st_age_ms_ = static_cast<float>(age_ms);
@@ -3604,9 +3641,10 @@ void dlio::OdomNode::computeConcaveHull() {
 
 }
 
-void dlio::OdomNode::updateKeyframes() {
-
-  // calculate difference in pose and rotation to all poses in trajectory
+// The keyframe decision of updateKeyframes() for any pose: a new keyframe when the closest keyframe is farther
+// than threshD or turned by more than threshR, with the same-yaw neighbourhood rule. Used by updateKeyframes()
+// on the observer state and by getNextPose() on the registered pose (odom/keyframe/refineEpsilon).
+bool dlio::OdomNode::keyframeCriterion(const Eigen::Vector3f& p, const Eigen::Quaternionf& q) {
   float closest_d = std::numeric_limits<float>::infinity();
   int closest_idx = -1;
   int keyframes_idx = 0;
@@ -3618,9 +3656,9 @@ void dlio::OdomNode::updateKeyframes() {
   for (const auto& k : this->keyframes) {
 
     // calculate distance between current pose and pose in keyframes
-    float delta_d = sqrt( pow(this->state.p[0] - k.first.first[0], 2) +
-                          pow(this->state.p[1] - k.first.first[1], 2) +
-                          pow(this->state.p[2] - k.first.first[2], 2) );
+    float delta_d = sqrt( pow(p[0] - k.first.first[0], 2) +
+                          pow(p[1] - k.first.first[1], 2) +
+                          pow(p[2] - k.first.first[2], 2) );
 
     // count the number nearby current pose
     if (delta_d <= this->keyframe_thresh_dist_ * 1.5){
@@ -3628,12 +3666,12 @@ void dlio::OdomNode::updateKeyframes() {
     }
 
     Eigen::Quaternionf dq;
-    if (this->state.q.dot(k.first.second) < 0.) {
+    if (q.dot(k.first.second) < 0.) {
       Eigen::Quaternionf lq = k.first.second;
       lq.w() *= -1.; lq.x() *= -1.; lq.y() *= -1.; lq.z() *= -1.;
-      dq = this->state.q * lq.inverse();
+      dq = q * lq.inverse();
     } else {
-      dq = this->state.q * k.first.second.inverse();
+      dq = q * k.first.second.inverse();
     }
     const double delta_theta_rad =
       2. * atan2(sqrt(pow(dq.x(), 2) + pow(dq.y(), 2) + pow(dq.z(), 2)), dq.w());
@@ -3655,7 +3693,7 @@ void dlio::OdomNode::updateKeyframes() {
   }
 
   if (closest_idx < 0) {
-    return;
+    return false;
   }
 
   // get closest pose and corresponding rotation
@@ -3663,19 +3701,19 @@ void dlio::OdomNode::updateKeyframes() {
   Eigen::Quaternionf closest_pose_r = this->keyframes[closest_idx].first.second;
 
   // calculate distance between current pose and closest pose from above
-  float dd = sqrt( pow(this->state.p[0] - closest_pose[0], 2) +
-                   pow(this->state.p[1] - closest_pose[1], 2) +
-                   pow(this->state.p[2] - closest_pose[2], 2) );
+  float dd = sqrt( pow(p[0] - closest_pose[0], 2) +
+                   pow(p[1] - closest_pose[1], 2) +
+                   pow(p[2] - closest_pose[2], 2) );
 
   // calculate difference in orientation using SLERP
   Eigen::Quaternionf dq;
 
-  if (this->state.q.dot(closest_pose_r) < 0.) {
+  if (q.dot(closest_pose_r) < 0.) {
     Eigen::Quaternionf lq = closest_pose_r;
     lq.w() *= -1.; lq.x() *= -1.; lq.y() *= -1.; lq.z() *= -1.;
-    dq = this->state.q * lq.inverse();
+    dq = q * lq.inverse();
   } else {
-    dq = this->state.q * closest_pose_r.inverse();
+    dq = q * closest_pose_r.inverse();
   }
 
   double theta_rad = 2. * atan2(sqrt( pow(dq.x(), 2) + pow(dq.y(), 2) + pow(dq.z(), 2) ), dq.w());
@@ -3701,6 +3739,14 @@ void dlio::OdomNode::updateKeyframes() {
     newKeyframe = true;
   }
 
+  return newKeyframe;
+}
+
+void dlio::OdomNode::updateKeyframes() {
+
+  // calculate difference in pose and rotation to all poses in trajectory
+  const bool newKeyframe = this->keyframeCriterion(this->state.p, this->state.q);
+  std::unique_lock<decltype(this->keyframes_mutex)> lock(this->keyframes_mutex);
   if (newKeyframe) {
 
     // update keyframe vector

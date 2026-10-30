@@ -54,6 +54,9 @@ LsqRegistration<PointTarget, PointSource>::LsqRegistration() {
   this->reg_name_ = "LsqRegistration";
   max_iterations_ = 64;
   min_iterations_ = 1;
+  prior_info_.setZero();
+  prior_enabled_ = false;
+  prior_pose_.setIdentity();
   rotation_epsilon_ = 2e-3;
   transformation_epsilon_ = 5e-4;
 
@@ -91,6 +94,32 @@ void LsqRegistration<PointTarget, PointSource>::setMinimumIterations(int iter) {
 }
 
 template <typename PointTarget, typename PointSource>
+void LsqRegistration<PointTarget, PointSource>::setPriorInformation(const Eigen::Matrix<double, 6, 6>& info) {
+  prior_info_ = info;
+  prior_enabled_ = info.allFinite() && info.cwiseAbs().maxCoeff() > 0.0;
+}
+
+template <typename PointTarget, typename PointSource>
+Eigen::Matrix<double, 6, 1> LsqRegistration<PointTarget, PointSource>::prior_residual(const Eigen::Isometry3d& x0) const {
+  // the correction accumulated so far, as a left (world-frame) delta: x0 = c * prior_pose
+  const Eigen::Isometry3d c = x0 * prior_pose_.inverse();
+  Eigen::AngleAxisd aa(c.linear());
+  Eigen::Matrix<double, 6, 1> xi;
+  xi.head<3>() = (std::isfinite(aa.angle()) && aa.angle() > 1e-12) ? Eigen::Vector3d(aa.angle() * aa.axis()) : Eigen::Vector3d::Zero();
+  xi.tail<3>() = c.translation();
+  return xi;
+}
+
+template <typename PointTarget, typename PointSource>
+double LsqRegistration<PointTarget, PointSource>::prior_cost(const Eigen::Isometry3d& x0) const {
+  if (!prior_enabled_) {
+    return 0.0;
+  }
+  const Eigen::Matrix<double, 6, 1> xi = prior_residual(x0);
+  return 0.5 * xi.dot(prior_info_ * xi);
+}
+
+template <typename PointTarget, typename PointSource>
 void LsqRegistration<PointTarget, PointSource>::setInitialLambdaFactor(double init_lambda_factor) {
   lm_init_lambda_factor_ = init_lambda_factor;
 }
@@ -116,6 +145,7 @@ void LsqRegistration<PointTarget, PointSource>::computeTransformation(PointCloud
 
   lm_lambda_ = -1.0;
   converged_ = false;
+  prior_pose_ = x0;
 
   if (lm_debug_print_) {
     std::cout << "********************************************" << std::endl;
@@ -171,6 +201,11 @@ bool LsqRegistration<PointTarget, PointSource>::step_gn(Eigen::Isometry3d& x0, E
   Eigen::Matrix<double, 6, 6> H;
   Eigen::Matrix<double, 6, 1> b;
   double y0 = linearize(x0, &H, &b);
+  const Eigen::Matrix<double, 6, 6> H_gicp = H;  // the diagnostics report the scan information alone
+  if (prior_enabled_) {
+    H += prior_info_;
+    b += prior_info_ * prior_residual(x0);
+  }
 
   Eigen::LDLT<Eigen::Matrix<double, 6, 6>> solver(H);
   Eigen::Matrix<double, 6, 1> d = solver.solve(-b);
@@ -180,7 +215,7 @@ bool LsqRegistration<PointTarget, PointSource>::step_gn(Eigen::Isometry3d& x0, E
   delta.translation() = d.tail<3>();
 
   x0 = delta * x0;
-  final_hessian_ = H;
+  final_hessian_ = H_gicp;
   final_error_ = y0;
 
   return true;
@@ -191,6 +226,12 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm(Eigen::Isometry3d& x0, E
   Eigen::Matrix<double, 6, 6> H;
   Eigen::Matrix<double, 6, 1> b;
   double y0 = linearize(x0, &H, &b);
+  const Eigen::Matrix<double, 6, 6> H_gicp = H;  // the diagnostics report the scan information alone
+  if (prior_enabled_) {
+    H += prior_info_;
+    b += prior_info_ * prior_residual(x0);
+    y0 += prior_cost(x0);
+  }
 
   if (lm_lambda_ < 0.0) {
     lm_lambda_ = lm_init_lambda_factor_ * H.diagonal().array().abs().maxCoeff();
@@ -206,7 +247,8 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm(Eigen::Isometry3d& x0, E
     delta.translation() = d.tail<3>();
 
     Eigen::Isometry3d xi = delta * x0;
-    double yi = compute_error(xi);
+    const double yi_gicp = compute_error(xi);
+    const double yi = yi_gicp + prior_cost(xi);
     double rho = (y0 - yi) / (d.dot(lm_lambda_ * d - b));
 
     if (lm_debug_print_) {
@@ -229,8 +271,8 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm(Eigen::Isometry3d& x0, E
 
     x0 = xi;
     lm_lambda_ = lm_lambda_ * std::max(1.0 / 3.0, 1 - std::pow(2 * rho - 1, 3));
-    final_hessian_ = H;
-    final_error_ = yi;
+    final_hessian_ = H_gicp;
+    final_error_ = yi_gicp;
     return true;
   }
 

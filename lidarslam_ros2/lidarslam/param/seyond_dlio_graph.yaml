@@ -64,10 +64,12 @@ dlio_odom_node:
     odom/gicp/informationWeighting/enabled: true            # Fuse the GICP correction with the IMU prior by the registration's own information, in the rover's frame: a direction the scan pins with information lambda keeps lambda/(lambda+lambda0) of its jump; nothing is rejected, no threshold. false = the plain correction (original DLIO). [def: false]
     odom/gicp/informationWeighting/lambda0Translation: 2000.0   # Prior information per body translation axis, in the Hessian's own units (the scorer's body_trans_info_min shows the scale). 0 = no weighting, statistics only. [def: 0.0]
     odom/gicp/informationWeighting/lambda0Rotation: 0.0      # Prior information per body rotation axis, same units. 0 = no weighting. [def: 0.0]
+    odom/gicp/informationWeighting/mode: solver               # final = fuse the finished correction with the prior (one step); solver = the same prior information inside every GICP iteration, so the stop rule and the prior-trust act on one problem. [def: final]
 
     # ── Geometric observer ────────────────────
     odom/geo/correctAtScanTime: false        # Measure the GICP pose against the state at the scan's stamp (from the IMU propagation history) instead of the current state, then apply the error to the current state: removes the lag of the scan's age (about 40 ms) from every published pose. false = original DLIO. [def: false]
     odom/geo/stateHistorySec: 1.0            # Seconds of propagated-state history kept for it. [def: 1.0]
+    odom/geo/scanTimeHorizontalOnly: false   # With correctAtScanTime: z keeps the current state as its reference (original DLIO) while x, y and attitude use the scan-time reference. [def: false]
 
     # ── IMU setup ─────────────────────────────────────────────────────────────
     imu/calibration: true
