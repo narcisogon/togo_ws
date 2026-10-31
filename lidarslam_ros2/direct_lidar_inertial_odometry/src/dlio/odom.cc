@@ -193,6 +193,11 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
       this->info_weighting_enabled_ ? "on" : "off", this->info_weighting_mode_.c_str(), this->info_weighting_lambda0_translation_,
       this->info_weighting_lambda0_rotation_, this->geo_correct_at_scan_time_ ? "on" : "off",
       this->geo_state_history_sec_);
+  RCLCPP_INFO(this->get_logger(), "Estimator: %s%s", this->geo_estimator_.c_str(),
+      this->iekf_ ? " (error-state covariance: the registration prior comes from it, the lambda0 keys are ignored)"
+      : this->iekf_output_ ? " (output filter: the observer drives registration and map as usual; an error-state filter"
+                             " fuses the registration poses with the IMU for the published odometry, pose, path and TF only)"
+      : "");
   this->gicp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
   this->gicp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
   this->gicp.setMaximumIterations(this->gicp_max_iter_);
@@ -595,6 +600,44 @@ void dlio::OdomNode::getParams() {
   dlio::declare_param(this, "odom/geo/correctAtScanTime", this->geo_correct_at_scan_time_, false);
   dlio::declare_param(this, "odom/geo/stateHistorySec", this->geo_state_history_sec_, 1.0);
   dlio::declare_param(this, "odom/geo/scanTimeHorizontalOnly", this->geo_scan_time_horizontal_only_, false);
+  dlio::declare_param(this, "odom/geo/estimator", this->geo_estimator_, std::string("observer"));
+  if (this->geo_estimator_ != "observer" && this->geo_estimator_ != "iekf" && this->geo_estimator_ != "iekf_output") {
+    RCLCPP_WARN(this->get_logger(), "odom/geo/estimator '%s' unknown, using 'observer'", this->geo_estimator_.c_str());
+    this->geo_estimator_ = "observer";
+  }
+  this->iekf_ = (this->geo_estimator_ == "iekf");
+  this->iekf_output_ = (this->geo_estimator_ == "iekf_output");
+  dlio::declare_param(this, "odom/iekf/hessianScale", this->iekf_hessian_scale_, 0.5);
+  {
+    double pf_att, pf_pos, sf_att, sf_pos;
+    dlio::declare_param(this, "odom/iekf/priorFloor/attitudeStd", pf_att, 8.7e-4);
+    dlio::declare_param(this, "odom/iekf/priorFloor/positionStd", pf_pos, 5e-3);
+    dlio::declare_param(this, "odom/iekf/scanFloor/attitudeStd", sf_att, 1.7e-3);
+    dlio::declare_param(this, "odom/iekf/scanFloor/positionStd", sf_pos, 1e-2);
+    this->iekf_prior_floor_ << pf_att * pf_att, pf_att * pf_att, pf_att * pf_att, pf_pos * pf_pos, pf_pos * pf_pos, pf_pos * pf_pos;
+    this->iekf_scan_floor_ << sf_att * sf_att, sf_att * sf_att, sf_att * sf_att, sf_pos * sf_pos, sf_pos * sf_pos, sf_pos * sf_pos;
+  }
+  dlio::declare_param(this, "odom/iekf/reset/positionStd", this->iekf_reset_position_std_, 1.0);
+  dlio::declare_param(this, "odom/iekf/reset/shift", this->iekf_reset_shift_m_, 0.5);
+  {
+    double n_g, n_a, n_bg, n_ba, s_att, s_pos, s_vel, s_bg, s_ba;
+    dlio::declare_param(this, "odom/iekf/noise/gyro", n_g, 2e-3);
+    dlio::declare_param(this, "odom/iekf/noise/accel", n_a, 2e-2);
+    dlio::declare_param(this, "odom/iekf/noise/gyroBias", n_bg, 1e-5);
+    dlio::declare_param(this, "odom/iekf/noise/accelBias", n_ba, 1e-4);
+    dlio::declare_param(this, "odom/iekf/init/attitudeStd", s_att, 1e-2);
+    dlio::declare_param(this, "odom/iekf/init/positionStd", s_pos, 1e-2);
+    dlio::declare_param(this, "odom/iekf/init/velocityStd", s_vel, 1e-1);
+    dlio::declare_param(this, "odom/iekf/init/gyroBiasStd", s_bg, 1e-3);
+    dlio::declare_param(this, "odom/iekf/init/accelBiasStd", s_ba, 1e-2);
+    this->iekf_filter_.noise().gyro = n_g;
+    this->iekf_filter_.noise().accel = n_a;
+    this->iekf_filter_.noise().gyro_bias = n_bg;
+    this->iekf_filter_.noise().accel_bias = n_ba;
+    this->iekf_filter_.reset(s_att, s_pos, s_vel, s_bg, s_ba);
+    this->iekf_init_std_[0] = s_att; this->iekf_init_std_[1] = s_pos; this->iekf_init_std_[2] = s_vel;
+    this->iekf_init_std_[3] = s_bg; this->iekf_init_std_[4] = s_ba;
+  }
 }
 
 void dlio::OdomNode::start() {
@@ -609,28 +652,29 @@ void dlio::OdomNode::start() {
 }
 
 void dlio::OdomNode::publishPose() {
+  const State& ps = this->publishedState();   // the observer's state, or the output filter's
 
   // nav_msgs::msg::Odometry
   this->odom_ros.header.stamp = this->imu_stamp;
   this->odom_ros.header.frame_id = this->odom_frame;
   this->odom_ros.child_frame_id = this->baselink_frame;
 
-  this->odom_ros.pose.pose.position.x = this->state.p[0];
-  this->odom_ros.pose.pose.position.y = this->state.p[1];
-  this->odom_ros.pose.pose.position.z = this->state.p[2];
+  this->odom_ros.pose.pose.position.x = ps.p[0];
+  this->odom_ros.pose.pose.position.y = ps.p[1];
+  this->odom_ros.pose.pose.position.z = ps.p[2];
 
-  this->odom_ros.pose.pose.orientation.w = this->state.q.w();
-  this->odom_ros.pose.pose.orientation.x = this->state.q.x();
-  this->odom_ros.pose.pose.orientation.y = this->state.q.y();
-  this->odom_ros.pose.pose.orientation.z = this->state.q.z();
+  this->odom_ros.pose.pose.orientation.w = ps.q.w();
+  this->odom_ros.pose.pose.orientation.x = ps.q.x();
+  this->odom_ros.pose.pose.orientation.y = ps.q.y();
+  this->odom_ros.pose.pose.orientation.z = ps.q.z();
 
-  this->odom_ros.twist.twist.linear.x = this->state.v.lin.w[0];
-  this->odom_ros.twist.twist.linear.y = this->state.v.lin.w[1];
-  this->odom_ros.twist.twist.linear.z = this->state.v.lin.w[2];
+  this->odom_ros.twist.twist.linear.x = ps.v.lin.w[0];
+  this->odom_ros.twist.twist.linear.y = ps.v.lin.w[1];
+  this->odom_ros.twist.twist.linear.z = ps.v.lin.w[2];
 
-  this->odom_ros.twist.twist.angular.x = this->state.v.ang.b[0];
-  this->odom_ros.twist.twist.angular.y = this->state.v.ang.b[1];
-  this->odom_ros.twist.twist.angular.z = this->state.v.ang.b[2];
+  this->odom_ros.twist.twist.angular.x = ps.v.ang.b[0];
+  this->odom_ros.twist.twist.angular.y = ps.v.ang.b[1];
+  this->odom_ros.twist.twist.angular.z = ps.v.ang.b[2];
 
   this->odom_pub->publish(this->odom_ros);
 
@@ -638,20 +682,21 @@ void dlio::OdomNode::publishPose() {
   this->pose_ros.header.stamp = this->imu_stamp;
   this->pose_ros.header.frame_id = this->odom_frame;
 
-  this->pose_ros.pose.position.x = this->state.p[0];
-  this->pose_ros.pose.position.y = this->state.p[1];
-  this->pose_ros.pose.position.z = this->state.p[2];
+  this->pose_ros.pose.position.x = ps.p[0];
+  this->pose_ros.pose.position.y = ps.p[1];
+  this->pose_ros.pose.position.z = ps.p[2];
 
-  this->pose_ros.pose.orientation.w = this->state.q.w();
-  this->pose_ros.pose.orientation.x = this->state.q.x();
-  this->pose_ros.pose.orientation.y = this->state.q.y();
-  this->pose_ros.pose.orientation.z = this->state.q.z();
+  this->pose_ros.pose.orientation.w = ps.q.w();
+  this->pose_ros.pose.orientation.x = ps.q.x();
+  this->pose_ros.pose.orientation.y = ps.q.y();
+  this->pose_ros.pose.orientation.z = ps.q.z();
 
   this->pose_pub->publish(this->pose_ros);
 
 }
 
 void dlio::OdomNode::publishToROS(pcl::PointCloud<PointType>::ConstPtr published_cloud, Eigen::Matrix4f T_cloud) {
+  const State& ps = this->publishedState();   // the observer's state, or the output filter's
   this->publishCloud(published_cloud, T_cloud);
 
   // nav_msgs::msg::Path
@@ -667,7 +712,7 @@ void dlio::OdomNode::publishToROS(pcl::PointCloud<PointType>::ConstPtr published
     const bool distance_ok =
       this->path_min_distance_ <= 0.0 ||
       !this->path_has_last_pushed_ ||
-      (this->state.p - this->path_last_pushed_p_).norm() >= this->path_min_distance_;
+      (ps.p - this->path_last_pushed_p_).norm() >= this->path_min_distance_;
 
     if (every_n_ok && distance_ok) {
       this->path_ros.header.stamp = this->imu_stamp;
@@ -676,16 +721,16 @@ void dlio::OdomNode::publishToROS(pcl::PointCloud<PointType>::ConstPtr published
       geometry_msgs::msg::PoseStamped p;
       p.header.stamp = this->imu_stamp;
       p.header.frame_id = this->odom_frame;
-      p.pose.position.x = this->state.p[0];
-      p.pose.position.y = this->state.p[1];
-      p.pose.position.z = this->state.p[2];
-      p.pose.orientation.w = this->state.q.w();
-      p.pose.orientation.x = this->state.q.x();
-      p.pose.orientation.y = this->state.q.y();
-      p.pose.orientation.z = this->state.q.z();
+      p.pose.position.x = ps.p[0];
+      p.pose.position.y = ps.p[1];
+      p.pose.position.z = ps.p[2];
+      p.pose.orientation.w = ps.q.w();
+      p.pose.orientation.x = ps.q.x();
+      p.pose.orientation.y = ps.q.y();
+      p.pose.orientation.z = ps.q.z();
 
       this->path_ros.poses.push_back(p);
-      this->path_last_pushed_p_ = this->state.p;
+      this->path_last_pushed_p_ = ps.p;
       this->path_has_last_pushed_ = true;
 
       if (this->path_max_poses_ > 0 &&
@@ -709,14 +754,14 @@ void dlio::OdomNode::publishToROS(pcl::PointCloud<PointType>::ConstPtr published
   transformStamped.header.frame_id = this->odom_frame;
   transformStamped.child_frame_id = this->baselink_frame;
 
-  transformStamped.transform.translation.x = this->state.p[0];
-  transformStamped.transform.translation.y = this->state.p[1];
-  transformStamped.transform.translation.z = this->state.p[2];
+  transformStamped.transform.translation.x = ps.p[0];
+  transformStamped.transform.translation.y = ps.p[1];
+  transformStamped.transform.translation.z = ps.p[2];
 
-  transformStamped.transform.rotation.w = this->state.q.w();
-  transformStamped.transform.rotation.x = this->state.q.x();
-  transformStamped.transform.rotation.y = this->state.q.y();
-  transformStamped.transform.rotation.z = this->state.q.z();
+  transformStamped.transform.rotation.w = ps.q.w();
+  transformStamped.transform.rotation.x = ps.q.x();
+  transformStamped.transform.rotation.y = ps.q.y();
+  transformStamped.transform.rotation.z = ps.q.z();
 
   br->sendTransform(transformStamped);
 
@@ -899,7 +944,11 @@ void dlio::OdomNode::publishDiagnostics(float status_code, float raw_points, flo
     // Registration pose and the observer's reference position at the last update (appended, indices 64-69)
     this->diag_reg_p_[0].load(), this->diag_reg_p_[1].load(), this->diag_reg_p_[2].load(),
     this->diag_ref_p_[0].load(), this->diag_ref_p_[1].load(), this->diag_ref_p_[2].load(),
-    this->last_gicp_iterations_.load()  // index 70
+    this->last_gicp_iterations_.load(),  // index 70
+    this->iekf_pos_std_.load(),           // index 71 (0 unless odom/geo/estimator: iekf | iekf_output)
+    this->iekf_att_std_deg_.load(),       // index 72
+    this->iekf_offset_m_.load(),          // index 73: |output filter - observer| position (m), iekf_output only
+    this->iekf_nis_last_.load()           // index 74: NIS of the last filter update (chi-square, 6 dof)
   };
   this->diagnostics_pub->publish(msg);
 }
@@ -2219,7 +2268,7 @@ bool dlio::OdomNode::getNextPose() {
         this->iw_rot_info_min_ = static_cast<float>(lr.minCoeff());
         this->iw_scale_min_ = static_cast<float>(l0t > 0.0 ? lt.minCoeff() / (lt.minCoeff() + l0t) : 1.0);
       }
-      if ((l0t <= 0.0 && l0r <= 0.0) || this->info_weighting_mode_ == "solver") {
+      if ((l0t <= 0.0 && l0r <= 0.0) || this->info_weighting_mode_ == "solver" || this->iekf_) {
         return correction;  // statistics only (lambda0 = 0), or the solver already fused (mode solver)
       }
       // the correction in the rover's frame: T = T_corr T_prior = T_prior C_b
@@ -2280,6 +2329,32 @@ bool dlio::OdomNode::getNextPose() {
       prior_world = (0.5 * (prior_world + prior_world.transpose())).eval();
     }
     this->gicp.setPriorInformation(prior_world);
+    if (this->iekf_) {
+      // The prior is the filter's pose information at the scan time, in nano_gicp's world-frame parameterisation:
+      // filter coordinates (dtheta body, dp world) -> GICP body coordinates (dtheta, dt_body = R^T dp) -> world
+      // left perturbation (L0_w = Ad^-T L0_b Ad^-1), divided by the Hessian scale so both sides share units.
+      const Eigen::Matrix4d tp = this->T_prior.cast<double>();
+      const Eigen::Matrix3d rp =
+        Eigen::Quaterniond(Eigen::Matrix3d(tp.block<3, 3>(0, 0))).normalized().toRotationMatrix();
+      const Eigen::Vector3d pp = tp.block<3, 1>(0, 3);
+      Eigen::Matrix3d skew_p;
+      skew_p << 0.0, -pp.z(), pp.y(), pp.z(), 0.0, -pp.x(), -pp.y(), pp.x(), 0.0;
+      Eigen::Matrix<double, 6, 6> ad_inv = Eigen::Matrix<double, 6, 6>::Zero();
+      ad_inv.block<3, 3>(0, 0) = rp.transpose();
+      ad_inv.block<3, 3>(3, 0) = -rp.transpose() * skew_p;
+      ad_inv.block<3, 3>(3, 3) = rp.transpose();
+      Eigen::Matrix<double, 6, 6> info_f;
+      {
+        std::lock_guard<std::mutex> lock(this->geo.mtx);
+        info_f = this->iekf_filter_.poseInformation(this->iekf_prior_floor_);
+      }
+      Eigen::Matrix<double, 6, 6> jf = Eigen::Matrix<double, 6, 6>::Identity();  // xi_f = jf * xi_b
+      jf.block<3, 3>(3, 3) = rp;
+      const Eigen::Matrix<double, 6, 6> l0b = jf.transpose() * info_f * jf / std::max(1e-9, this->iekf_hessian_scale_);
+      Eigen::Matrix<double, 6, 6> prior_iekf = ad_inv.transpose() * l0b * ad_inv;
+      prior_iekf = (0.5 * (prior_iekf + prior_iekf.transpose())).eval();
+      this->gicp.setPriorInformation(prior_iekf);
+    }
   }
 
   // Align with current submap with global IMU transformation as initial guess
@@ -3112,8 +3187,14 @@ void dlio::OdomNode::propagateState() {
   this->state.v.ang.b = this->imu_meas.ang_vel;
   this->state.v.ang.w = this->state.q.toRotationMatrix() * this->state.v.ang.b;
 
+  // Error-state covariance step (odom/geo/estimator: iekf), with the attitude the nominal step started from
+  if (this->iekf_) {
+    this->iekf_filter_.propagate(dt, this->imu_meas.lin_accel.cast<double>(), this->imu_meas.ang_vel.cast<double>(),
+                                 qhat.toRotationMatrix().cast<double>());
+  }
+
   // History of the propagated state for the scan-time correction (odom/geo/correctAtScanTime)
-  if (this->geo_correct_at_scan_time_) {
+  if (this->geo_correct_at_scan_time_ || this->iekf_) {
     StateSnapshot snap;
     snap.stamp = this->imu_meas.stamp;
     snap.p[0] = this->state.p[0]; snap.p[1] = this->state.p[1]; snap.p[2] = this->state.p[2];
@@ -3126,7 +3207,148 @@ void dlio::OdomNode::propagateState() {
     }
   }
 
+  // Output filter (odom/geo/estimator: iekf_output): its own nominal state follows the same IMU sample (its residual
+  // biases on top of the observer's calibrated ones), its covariance takes the same step, and a history of it
+  // serves the scan-time reference. Nothing here touches the observer's state.
+  if (this->iekf_output_ && this->fstate_synced_) {
+    const float dtf = static_cast<float>(dt);
+    // imu_meas carries the observer's live bias (a random walk at gain 1.0 per scan, harmless for the observer,
+    // which resets its attitude every scan, fatal for a filter that trusts the gyro for seconds): add it back and
+    // take the filter's own bias states off the raw sample instead
+    const Eigen::Vector3f acc_b = this->imu_meas.lin_accel + this->state.b.accel - this->fstate_.b.accel;
+    const Eigen::Vector3f gyr_b = this->imu_meas.ang_vel + this->state.b.gyro - this->fstate_.b.gyro;
+    const Eigen::Quaternionf qf = this->fstate_.q;
+    this->iekf_filter_.propagate(dt, acc_b.cast<double>(), gyr_b.cast<double>(), qf.toRotationMatrix().cast<double>());
+    Eigen::Vector3f acc_w = qf._transformVector(acc_b);
+    acc_w[2] -= static_cast<float>(this->gravity_);
+    this->fstate_.p += this->fstate_.v.lin.w * dtf + 0.5f * dtf * dtf * acc_w;
+    this->fstate_.v.lin.w += acc_w * dtf;
+    Eigen::Quaternionf om;
+    om.w() = 0.0f;
+    om.vec() = gyr_b;
+    const Eigen::Quaternionf tq = qf * om;
+    this->fstate_.q.w() += 0.5f * dtf * tq.w();
+    this->fstate_.q.vec() += 0.5f * dtf * tq.vec();
+    this->fstate_.q.normalize();
+    this->fstate_.v.lin.b = this->fstate_.q.toRotationMatrix().inverse() * this->fstate_.v.lin.w;
+    this->fstate_.v.ang.b = gyr_b;
+    this->fstate_.v.ang.w = this->fstate_.q.toRotationMatrix() * gyr_b;
+    StateSnapshot snap;
+    snap.stamp = this->imu_meas.stamp;
+    snap.p[0] = this->fstate_.p[0]; snap.p[1] = this->fstate_.p[1]; snap.p[2] = this->fstate_.p[2];
+    snap.q[0] = this->fstate_.q.w(); snap.q[1] = this->fstate_.q.x();
+    snap.q[2] = this->fstate_.q.y(); snap.q[3] = this->fstate_.q.z();
+    this->fstate_history_.push_back(snap);
+    const double oldest = snap.stamp - std::max(0.1, this->geo_state_history_sec_);
+    while (!this->fstate_history_.empty() && this->fstate_history_.front().stamp < oldest) {
+      this->fstate_history_.pop_front();
+    }
+  }
+
 }
+
+// The error-state Kalman update (odom/geo/estimator: iekf). The registration already fused the filter's pose
+// prior with the scan, so its pose is the posterior mean of the pose block; here the whole state is conditioned
+// on it: the pose shift against the filter's prediction at the scan time, the posterior pose covariance from the
+// prior and the scan's information, then velocity and biases through their cross-covariances. The pose shift is
+// applied to the current state the way the scan-time correction does it (position as is, the rotation carried
+// into the current body frame).
+void dlio::OdomNode::iekfUpdate(const Eigen::Vector3f& pin, const Eigen::Quaternionf& qin, const Eigen::Vector3f& p_ref,
+                                const Eigen::Quaternionf& q_ref, const Eigen::Quaternionf& qhat) {
+  // 1. the shift of the pose: fused minus predicted, dtheta in the body frame of the prediction, dp in the world
+  const Eigen::Quaterniond qr = q_ref.cast<double>().normalized();
+  const Eigen::Quaterniond qm = qin.cast<double>().normalized();
+  Eigen::Quaterniond dq = qr.conjugate() * qm;
+  if (dq.w() < 0.0) { dq.coeffs() *= -1.0; }
+  const Eigen::AngleAxisd aa(dq);
+  Eigen::Matrix<double, 6, 1> dpose;
+  dpose.head<3>() = (std::isfinite(aa.angle()) && aa.angle() > 1e-12) ? Eigen::Vector3d(aa.angle() * aa.axis())
+                                                                      : Eigen::Vector3d::Zero();
+  dpose.tail<3>() = (pin - p_ref).cast<double>();
+
+  // 2. the scan's information in filter coordinates: the registration's Hessian (scan only) brought from the world
+  //    parameterisation into the body frame (Ad^T H Ad), then its translation block into world axes
+  const Eigen::Matrix4d tp = this->T_prior.cast<double>();
+  const Eigen::Matrix3d rp = Eigen::Quaterniond(Eigen::Matrix3d(tp.block<3, 3>(0, 0))).normalized().toRotationMatrix();
+  const Eigen::Vector3d pp = tp.block<3, 1>(0, 3);
+  Eigen::Matrix<double, 6, 6> ad = Eigen::Matrix<double, 6, 6>::Zero();
+  ad.block<3, 3>(0, 0) = rp;
+  ad.block<3, 3>(3, 0) = ErrorStateFilter::skew(pp) * rp;
+  ad.block<3, 3>(3, 3) = rp;
+  Eigen::Matrix<double, 6, 6> hb = ad.transpose() * this->gicp.getFinalHessian() * ad;
+  hb = (0.5 * (hb + hb.transpose())).eval();
+  Eigen::Matrix<double, 6, 6> jf = Eigen::Matrix<double, 6, 6>::Identity();
+  jf.block<3, 3>(3, 3) = rp;
+  const Eigen::Matrix<double, 6, 6> hf = jf * hb * jf.transpose();   // xi_b = jf^T xi_f (dt_body = R^T dp)
+  const double s = std::max(1e-9, this->iekf_hessian_scale_);
+  if (!hf.allFinite()) {
+    return;
+  }
+
+  // 3. posterior of the pose block, then condition everything on it
+  const Eigen::Matrix<double, 6, 6> info_prior = this->iekf_filter_.poseInformation(this->iekf_prior_floor_);
+  // the scan's information with a floor on its uncertainty: cov = (s H + eps)^-1 + floor, back to information
+  Eigen::Matrix<double, 6, 6> scan_cov = (s * hf + 1e-9 * Eigen::Matrix<double, 6, 6>::Identity())
+    .ldlt().solve(Eigen::Matrix<double, 6, 6>::Identity());
+  scan_cov = (0.5 * (scan_cov + scan_cov.transpose())).eval();
+  scan_cov.diagonal() += this->iekf_scan_floor_;
+  const Eigen::Matrix<double, 6, 6> info_scan = scan_cov.ldlt().solve(Eigen::Matrix<double, 6, 6>::Identity());
+  Eigen::Matrix<double, 6, 6> info_post = info_prior + info_scan;
+  info_post = (0.5 * (info_post + info_post.transpose())).eval();
+  const Eigen::Matrix<double, 6, 6> ppost = info_post.ldlt().solve(Eigen::Matrix<double, 6, 6>::Identity());
+  // consistency: the shift against what prior and scan together allow (chi-square with 6 dof: ~6 when healthy)
+  const Eigen::Matrix<double, 6, 6> shift_cov = info_prior.ldlt().solve(Eigen::Matrix<double, 6, 6>::Identity()) + scan_cov;
+  // dpose is the posterior shift K nu, so the raw innovation behind it is nu = S P^-1 dpose; the statistic on nu is
+  // the usual chi-square with 6 dof (on dpose itself it would only be the sum of the squared gains, about 0.4)
+  const Eigen::Matrix<double, 6, 1> nu_raw = shift_cov * (info_prior * dpose);
+  const double nis = nu_raw.dot(shift_cov.ldlt().solve(nu_raw));
+  this->iekf_nis_sum_ += nis;
+  this->iekf_nis_last_ = static_cast<float>(nis);
+  const double pos_std_now = std::sqrt(this->iekf_filter_.P().block<3, 3>(3, 3).diagonal().maxCoeff());
+  if (pos_std_now > this->iekf_reset_position_std_ || dpose.tail<3>().norm() > this->iekf_reset_shift_m_) {
+    // the filter has lost the plot: keep the registration's pose, drop the covariance to its initial values
+    ++this->iekf_resets_;
+    RCLCPP_WARN(this->get_logger(), "iekf: covariance reset %llu (position 1-sigma %.2f m, shift %.2f m)",
+                static_cast<unsigned long long>(this->iekf_resets_), pos_std_now, dpose.tail<3>().norm());
+    this->iekf_filter_.reset(1e-2, 1e-2, 1e-1, 1e-3, 1e-2);
+  }
+  const Eigen::Matrix<double, 15, 1> dx = this->iekf_filter_.conditionOnPose(dpose, ppost);
+  this->iekf_filter_.floorPose(this->iekf_prior_floor_);
+  if (!dx.allFinite()) {
+    return;
+  }
+
+  // 4. apply: the attitude shift carried from the scan-time body frame into the current one, position as is
+  const Eigen::Quaternionf d_age = q_ref.conjugate() * qhat;   // body rotation since the scan time
+  const Eigen::Vector3f dth = d_age.conjugate()._transformVector(dx.head<3>().cast<float>());
+  const float ang = dth.norm();
+  if (ang > 1e-9f) {
+    this->state.q = (this->state.q * Eigen::Quaternionf(Eigen::AngleAxisf(ang, dth / ang))).normalized();
+  }
+  this->state.p += dx.segment<3>(3).cast<float>();
+  this->state.v.lin.w += dx.segment<3>(6).cast<float>();
+  this->state.v.lin.b = this->state.q.toRotationMatrix().inverse() * this->state.v.lin.w;
+  this->state.b.gyro += dx.segment<3>(9).cast<float>();
+  this->state.b.gyro = this->state.b.gyro.array().min(this->geo_gbias_max_).max(-this->geo_gbias_max_);
+  this->state.b.accel += dx.segment<3>(12).cast<float>();
+  this->state.b.accel = this->state.b.accel.array().min(this->geo_abias_max_).max(-this->geo_abias_max_);
+  this->geo.prev_p = this->state.p;
+  this->geo.prev_q = this->state.q;
+  this->geo.prev_vel = this->state.v.lin.w;
+
+  // 5. diagnostics
+  const auto& P = this->iekf_filter_.P();
+  this->iekf_pos_std_ = static_cast<float>(std::sqrt(P.block<3, 3>(3, 3).diagonal().maxCoeff()));
+  this->iekf_att_std_deg_ = static_cast<float>(std::sqrt(P.block<3, 3>(0, 0).diagonal().maxCoeff()) * 180.0 / M_PI);
+  ++this->iekf_updates_;
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
+    "iekf: %llu updates, %llu resets, NIS %.1f mean; shift %.1f mm / %.3f deg; 1-sigma position %.1f mm, attitude %.3f deg, velocity %.1f mm/s",
+    static_cast<unsigned long long>(this->iekf_updates_), static_cast<unsigned long long>(this->iekf_resets_),
+    this->iekf_nis_sum_ / static_cast<double>(std::max<uint64_t>(1, this->iekf_updates_)), dpose.tail<3>().norm() * 1000.0,
+    dpose.head<3>().norm() * 180.0 / M_PI, this->iekf_pos_std_.load() * 1000.0, this->iekf_att_std_deg_.load(),
+    std::sqrt(P.block<3, 3>(6, 6).diagonal().maxCoeff()) * 1000.0);
+}
+
 
 void dlio::OdomNode::updateState() {
 
@@ -3148,7 +3370,7 @@ void dlio::OdomNode::updateState() {
   // carried into the current body frame.
   Eigen::Vector3f p_ref = this->state.p;
   Eigen::Quaternionf q_ref = qhat;
-  if (this->geo_correct_at_scan_time_) {
+  if (this->geo_correct_at_scan_time_ || this->iekf_) {
     bool found = false;
     if (this->state_history_.size() >= 2 && this->state_history_.front().stamp <= this->scan_stamp &&
         this->scan_stamp <= this->state_history_.back().stamp) {
@@ -3189,9 +3411,14 @@ void dlio::OdomNode::updateState() {
   }
   // Constuct error quaternion (in the reference body frame, carried into the current body frame)
   qe = q_ref.conjugate()*qin;
-  if (this->geo_correct_at_scan_time_) {
+  if (this->geo_correct_at_scan_time_ || this->iekf_) {
     const Eigen::Quaternionf d = q_ref.conjugate() * qhat;  // body rotation since the scan time
     qe = (d.conjugate() * qe * d).normalized();
+  }
+
+  if (this->iekf_) {
+    this->iekfUpdate(pin, qin, p_ref, q_ref, qhat);
+    return;
   }
 
   double sgn = 1.;
@@ -3237,6 +3464,154 @@ void dlio::OdomNode::updateState() {
   this->geo.prev_q = this->state.q;
   this->geo.prev_vel = this->state.v.lin.w;
 
+  // Output filter (odom/geo/estimator: iekf_output): the same registration pose, as a measurement for the state
+  // that is published; the observer above is untouched by it
+  if (this->iekf_output_) {
+    this->outputFilterUpdate(pin, qin);
+  }
+
+}
+
+// The output filter's state starts from (or falls back to) the observer's state, biases included (the calibrated
+// values at the first registration), with the initial covariance; its history restarts with the next IMU sample.
+void dlio::OdomNode::syncOutputFilter(const char* why) {
+  this->fstate_ = this->state;
+  this->iekf_filter_.reset(this->iekf_init_std_[0], this->iekf_init_std_[1], this->iekf_init_std_[2],
+                           this->iekf_init_std_[3], this->iekf_init_std_[4]);
+  this->fstate_history_.clear();
+  this->fstate_synced_ = true;
+  RCLCPP_INFO(this->get_logger(), "iekf_output: filter state set to the observer's (%s)", why);
+}
+
+// The state a history holds at a stamp, interpolated between the two samples around it. False (p, q untouched)
+// when the stamp is outside the history.
+bool dlio::OdomNode::lookupHistory(const std::deque<StateSnapshot>& history, double stamp, Eigen::Vector3f& p,
+                                   Eigen::Quaternionf& q) const {
+  if (history.size() < 2 || history.front().stamp > stamp || stamp > history.back().stamp) {
+    return false;
+  }
+  auto after = std::lower_bound(history.begin(), history.end(), stamp,
+    [](const StateSnapshot& s, double t) { return s.stamp < t; });
+  if (after == history.begin()) { ++after; }
+  const StateSnapshot& b = *after;
+  const StateSnapshot& a = *std::prev(after);
+  const double span = b.stamp - a.stamp;
+  const float w = span > 1e-9 ? static_cast<float>(std::min(1.0, std::max(0.0, (stamp - a.stamp) / span))) : 1.0f;
+  const Eigen::Vector3f pa(a.p[0], a.p[1], a.p[2]), pb(b.p[0], b.p[1], b.p[2]);
+  const Eigen::Quaternionf qa(a.q[0], a.q[1], a.q[2], a.q[3]), qb(b.q[0], b.q[1], b.q[2], b.q[3]);
+  p = pa + w * (pb - pa);
+  q = qa.slerp(w, qb).normalized();
+  return true;
+}
+
+// The plain Kalman update of the output filter (odom/geo/estimator: iekf_output), under geo.mtx: the registration
+// pose (pin, qin, valid at the scan time) against the filter's own state at the scan time, the measurement
+// covariance from the scan's Hessian (scan only, scaled by odom/iekf/hessianScale, floored), the correction of all
+// 15 error states applied to the filter's state, the attitude part carried into the current body frame. The
+// history entries after the scan time carry the same correction, so the next scan's reference includes it.
+void dlio::OdomNode::outputFilterUpdate(const Eigen::Vector3f& pin, const Eigen::Quaternionf& qin) {
+  if (!this->fstate_synced_) {
+    this->syncOutputFilter("first registration");
+    return;
+  }
+
+  // 1. the filter's reference at the scan time, and the innovation
+  Eigen::Vector3f p_ref = this->fstate_.p;
+  Eigen::Quaternionf q_ref = this->fstate_.q;
+  const bool found = this->lookupHistory(this->fstate_history_, this->scan_stamp, p_ref, q_ref);
+  Eigen::Quaterniond dq = q_ref.cast<double>().normalized().conjugate() * qin.cast<double>().normalized();
+  if (dq.w() < 0.0) { dq.coeffs() *= -1.0; }
+  const Eigen::AngleAxisd aa(dq);
+  Eigen::Matrix<double, 6, 1> nu;
+  nu.head<3>() = (std::isfinite(aa.angle()) && aa.angle() > 1e-12) ? Eigen::Vector3d(aa.angle() * aa.axis())
+                                                                   : Eigen::Vector3d::Zero();
+  nu.tail<3>() = (pin - p_ref).cast<double>();
+
+  // 2. the scan's covariance in filter coordinates (as in iekfUpdate: world parameterisation -> body -> filter)
+  const Eigen::Matrix4d tp = this->T_prior.cast<double>();
+  const Eigen::Matrix3d rp = Eigen::Quaterniond(Eigen::Matrix3d(tp.block<3, 3>(0, 0))).normalized().toRotationMatrix();
+  const Eigen::Vector3d pp = tp.block<3, 1>(0, 3);
+  Eigen::Matrix<double, 6, 6> ad = Eigen::Matrix<double, 6, 6>::Zero();
+  ad.block<3, 3>(0, 0) = rp;
+  ad.block<3, 3>(3, 0) = ErrorStateFilter::skew(pp) * rp;
+  ad.block<3, 3>(3, 3) = rp;
+  Eigen::Matrix<double, 6, 6> hb = ad.transpose() * this->gicp.getFinalHessian() * ad;
+  hb = (0.5 * (hb + hb.transpose())).eval();
+  Eigen::Matrix<double, 6, 6> jf = Eigen::Matrix<double, 6, 6>::Identity();
+  jf.block<3, 3>(3, 3) = rp;
+  const Eigen::Matrix<double, 6, 6> hf = jf * hb * jf.transpose();
+  const double s = std::max(1e-9, this->iekf_hessian_scale_);
+  if (!hf.allFinite()) {
+    return;
+  }
+  Eigen::Matrix<double, 6, 6> scan_cov = (s * hf + 1e-9 * Eigen::Matrix<double, 6, 6>::Identity())
+    .ldlt().solve(Eigen::Matrix<double, 6, 6>::Identity());
+  scan_cov = (0.5 * (scan_cov + scan_cov.transpose())).eval();
+  scan_cov.diagonal() += this->iekf_scan_floor_;
+
+  // 3. runaway guard: back to the observer's state
+  const double pos_std_now = std::sqrt(this->iekf_filter_.P().block<3, 3>(3, 3).diagonal().maxCoeff());
+  if (pos_std_now > this->iekf_reset_position_std_ || nu.tail<3>().norm() > this->iekf_reset_shift_m_) {
+    ++this->iekf_resets_;
+    RCLCPP_WARN(this->get_logger(), "iekf_output: reset %llu (position 1-sigma %.2f m, innovation %.2f m)",
+                static_cast<unsigned long long>(this->iekf_resets_), pos_std_now, nu.tail<3>().norm());
+    this->syncOutputFilter("runaway");
+    return;
+  }
+
+  // 4. the update
+  double nis = 0.0;
+  const Eigen::Matrix<double, 15, 1> dx = this->iekf_filter_.updatePose(nu, scan_cov, nis);
+  this->iekf_filter_.floorPose(this->iekf_prior_floor_);
+  if (!dx.allFinite()) {
+    return;
+  }
+  this->iekf_nis_sum_ += nis;
+  this->iekf_nis_last_ = static_cast<float>(nis);
+
+  // 5. apply to the filter's state: the attitude shift carried from the scan-time body frame into the current one
+  const Eigen::Vector3f dth_ref = dx.head<3>().cast<float>();
+  const Eigen::Vector3f dp = dx.segment<3>(3).cast<float>();
+  auto rotate_by = [](Eigen::Quaternionf& q, const Eigen::Quaternionf& q_at_scan, const Eigen::Vector3f& dth) {
+    const Eigen::Quaternionf d_age = q_at_scan.conjugate() * q;   // body rotation since the scan time
+    const Eigen::Vector3f dth_now = d_age.conjugate()._transformVector(dth);
+    const float ang = dth_now.norm();
+    if (ang > 1e-9f) {
+      q = (q * Eigen::Quaternionf(Eigen::AngleAxisf(ang, dth_now / ang))).normalized();
+    }
+  };
+  rotate_by(this->fstate_.q, q_ref, dth_ref);
+  this->fstate_.p += dp;
+  this->fstate_.v.lin.w += dx.segment<3>(6).cast<float>();
+  this->fstate_.v.lin.b = this->fstate_.q.toRotationMatrix().inverse() * this->fstate_.v.lin.w;
+  this->fstate_.b.gyro += dx.segment<3>(9).cast<float>();
+  this->fstate_.b.gyro = this->fstate_.b.gyro.array().min(this->geo_gbias_max_).max(-this->geo_gbias_max_);
+  this->fstate_.b.accel += dx.segment<3>(12).cast<float>();
+  this->fstate_.b.accel = this->fstate_.b.accel.array().min(this->geo_abias_max_).max(-this->geo_abias_max_);
+  if (found) {
+    for (auto& snap : this->fstate_history_) {
+      if (snap.stamp <= this->scan_stamp) { continue; }
+      snap.p[0] += dp[0]; snap.p[1] += dp[1]; snap.p[2] += dp[2];
+      Eigen::Quaternionf qs(snap.q[0], snap.q[1], snap.q[2], snap.q[3]);
+      rotate_by(qs, q_ref, dth_ref);
+      snap.q[0] = qs.w(); snap.q[1] = qs.x(); snap.q[2] = qs.y(); snap.q[3] = qs.z();
+    }
+  }
+
+  // 6. diagnostics
+  const auto& P = this->iekf_filter_.P();
+  this->iekf_pos_std_ = static_cast<float>(std::sqrt(P.block<3, 3>(3, 3).diagonal().maxCoeff()));
+  this->iekf_att_std_deg_ = static_cast<float>(std::sqrt(P.block<3, 3>(0, 0).diagonal().maxCoeff()) * 180.0 / M_PI);
+  this->iekf_offset_m_ = (this->fstate_.p - this->state.p).norm();
+  ++this->iekf_updates_;
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
+    "iekf_output: %llu updates, %llu resets, NIS %.1f mean (last %.1f); innovation %.1f mm / %.3f deg; offset to the observer %.1f mm; "
+    "1-sigma position %.1f mm, attitude %.3f deg, velocity %.1f mm/s",
+    static_cast<unsigned long long>(this->iekf_updates_), static_cast<unsigned long long>(this->iekf_resets_),
+    this->iekf_nis_sum_ / static_cast<double>(std::max<uint64_t>(1, this->iekf_updates_)), nis,
+    nu.tail<3>().norm() * 1000.0, nu.head<3>().norm() * 180.0 / M_PI, this->iekf_offset_m_.load() * 1000.0,
+    this->iekf_pos_std_.load() * 1000.0, this->iekf_att_std_deg_.load(),
+    std::sqrt(P.block<3, 3>(6, 6).diagonal().maxCoeff()) * 1000.0);
 }
 
 sensor_msgs::msg::Imu::SharedPtr dlio::OdomNode::transformImu(const sensor_msgs::msg::Imu::SharedPtr& imu_raw) {

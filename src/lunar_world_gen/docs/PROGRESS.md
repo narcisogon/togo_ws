@@ -402,3 +402,17 @@ Started at 00:01 on 2026-10-26 and stopped at 00:11 (the user called it a day); 
   (`variants/seyond_dlio_graph_lunar__lagfix.yaml`). Default = solver-mode weighting (`solver` reference: RPE
   10 m -15 %, zig-zag -9 %, GICP -23 % vs `speed`). Rejected switches removed; the Kalman update is the only
   list item left. Tree handed to the user for a commit.
+- **2026-10-29 evening, round 4 opened**: the error-state Kalman update built as a switch
+  (`odom/geo/estimator: iekf`, `include/dlio/iekf.h`); first 80 s check clean with the best short-run zig-zag so
+  far and no lag; the Hessian-scale sweep (5 / 20 / 80) is running as three labels against `solver`.
+- **2026-10-30, round 4 measured**: the Kalman update (`odom/geo/estimator: iekf`) calibrated (the honest
+  Hessian scale is 0.15-0.5, not 20) and measured on the lap: at scale 1 it removes the lag and 23 % of the
+  zig-zag but adds a slow heading wander (RPE 10 m +17 %, end drift x4) because the keyframes follow the
+  smoothed pose, so by the guard it stays off. Next: an output-only mode that leaves the map untouched.
+- **2026-10-30, round 4 closed**: the error-state filter in its output-only form (`odom/geo/estimator:
+  iekf_output`, scale 0.5) is the default: registration and map as before, the filter fuses the registration
+  poses with the IMU for the published odometry only. Three runs against the round-3 default: zig-zag -32 %,
+  heading lag gone, heading error -39 %, roll/pitch -58/-64 %, RPE rotation about -50 %, nothing worse (the 5-10 % lower
+  GICP time and CPU of those runs are machine state: the registration is untouched). The feedback form (`iekf`) failed the guard (heading wander) and stays off; the observer's
+  bias update (gain 1.0 per scan) was the cause of the output filter's first heading drift, fixed by giving the
+  filter its own bias states. Tree handed to the user for a commit.

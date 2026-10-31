@@ -308,7 +308,159 @@ started: the iterated Kalman update (switch 6); it is now the only item left on 
 mechanisms it would unify (prior-trust, scan-time attitude) are in hand. The 0.3-0.5 m lateral zig-zag is down
 to about 50 mm from 55 and remains the floor set by the plains' weak-direction scatter.
 
-More results are appended as the labels finish.
+## Round 4 (from 2026-10-29 evening): the error-state Kalman update as a switch
+
+The user's decision after round 3: build the filter, as a toggle. `odom/geo/estimator: observer | iekf`
+(`include/dlio/iekf.h`, hooks in `odom.cc`): the nominal state stays DLIO's own; a 15x15 error-state covariance
+[attitude (body) | position | velocity | gyro bias | accel bias] is propagated on every IMU sample from the noise
+densities under `odom/iekf/noise/*` (Sola's ES-EKF). Per scan, the covariance's pose block, inverted and divided by
+`odom/iekf/hessianScale` (the one calibration number: information per unit of the GICP Hessian), is handed to the
+solver as its prior in place of the constant lambda0, so the registration converges on the properly weighted
+problem and its result is the posterior mean of the pose. The filter then conditions velocity and biases on that
+pose through their cross-covariances and applies the pose shift to the current state the way the scan-time
+correction does (attitude carried over the scan age, position as is), which also removes the lag. With the
+switch off every line of the observer path is unchanged. The interface is generic on purpose: a second
+measurement source (stereo visual odometry later) is another conditioning step on the same covariance.
+
+- First 80 s check (scale 20, 2026-10-29 22:25): zig-zag 25.6 mm (the default's check: 26.5, the trade's: 31.5),
+  heading lag -7 ms, ATE 0.056 m, RPE 10 m 0.90 %, per-scan correction 60 -> 24 mm and GICP 7.5 -> 3.2 ms because
+  the solver starts from a strongly weighted prediction. The filter's own 1-sigma: about 2 mm position, 0.01 deg
+  attitude, 10 mm/s velocity; the simulated IMU is near-ideal (calibrated biases about 1e-8), so the noise
+  densities act as model-error knobs here and must come from the datasheet on the real rover.
+- Labels `iekf` (scale 20), `iekf_s5`, `iekf_s80` (2 runs each, 2026-10-29 22:27-23:22): DIVERGED. Five of the six
+  lap runs ran away to km-scale ATE (one stayed bounded at 0.49 m). Each was healthy to about 200 s (the start of
+  the slope), then the filter's 1-sigma exploded (position 2 mm to metres, velocity growing linearly) while the
+  per-scan shifts stayed at millimetres: the pose dragged the map along with it. Cause: overconfidence. The scan's
+  rotation information, multiplied by the same scale, claimed the pitch to 0.006 deg (a ground plane supports
+  about 0.06), so the prior never let the registration correct the real 0.1-0.2 deg attitude error; gravity
+  leaked into the velocity on the slope and the prior pulled the map after it. Run folders deleted.
+- Fix (build 2026-10-29 23:40): a scan floor (the scan's covariance is (s H + eps)^-1 plus diag(0.1 deg, 1 cm)^2
+  before it is turned back into information), prior floors (0.05 deg, 5 mm: `poseInformation(floor)` and
+  `floorPose()` after each conditioning), the normalised innovation squared (NIS) of every shift in the throttled
+  log line (chi-square with 6 degrees of freedom: about 6 when the filter is consistent; the logged mean is
+  cumulative), and a runaway guard (covariance reset when the position 1-sigma passes 1 m or a shift 0.5 m).
+  Keys: `odom/iekf/priorFloor/{attitudeStd,positionStd}`, `scanFloor/{...}`, `reset/{positionStd,shift}`.
+- The key measurement (`shift_stats.py` over diagnostics 64-69, 2026-10-29 23:55): in observer mode too, the
+  registration lands 48-61 mm (p50; p90 130-160 mm) from the prediction horizontally on every 50 ms scan and
+  5 mm vertically. That is the registration's horizontal scatter, the zig-zag seen directly, and it means the
+  GICP Hessian overstates the lateral information about 100x (PLANE covariances with epsilon 1e-3 inflate the
+  Mahalanobis weights). The scale therefore has to be about 0.1-2, not 5-80.
+- 250 s checks (one run each, covering the slope; 2026-10-29 23:45 - 2026-10-30 00:00). Columns: ATE, zig-zag,
+  heading lag, end drift and yaw, RPE 10 m, NIS cumulative mean (second-half mean in brackets):
+  - scale 0.15: 0.810 m, 19.6 mm, -18 ms, 2.04 m and +3.5 deg, 3.16 %, 0.7. Stable and the lowest zig-zag seen,
+    but the IMU is over-trusted: the registration is dragged along (shifts 3-12 mm) and the trajectory drifts.
+  - scale 0.5: 0.240 m, 22.6 mm, -8 ms, 0.185 m and +1.3 deg, 2.31 %, 1.4 (2.4).
+  - scale 2: 0.231 m, 37.7 mm, -5 ms, 0.266 m and -1.0 deg, 1.48 %, 5.1 (12).
+  - scale 5: diverged at the slope (NIS 12 before it, 382 guard resets after).
+  Reading: the consistent scale differs by leg, about 2 on the first half and about 1 on the slope and rocks.
+  GICP time and the per-scan correction grow with the scale (4.9 to 7.2 ms, 31 to 46 mm).
+- The `solver` default over the same 250 s (one run, 00:39): ATE 0.103 m, zig-zag 41.9 mm, heading lag +41 ms,
+  end drift 0.027 m and +0.2 deg, RPE 10 m 1.32 %, GICP 8.3 ms, correction 56 mm. So every filter setting drifts
+  5 to 17 times more in heading before the rover revisits anything, while 0.15 and 0.5 cut the zig-zag in half.
+- Full-lap labels (2 runs each against the 3-run `solver`, 2026-10-30 00:00-00:39):
+  - `iekf_s2` (scale 2): ATE 0.199 m (runs 0.142 / 0.255, within noise), RPE 1 m +10 % (worse), RPE 10 m
+    1.82 % (+19 %, within noise: 1.63 / 2.00), zig-zag 51 mm (same), heading lag -7 ms (better), RPE 1 m and
+    10 m rotation -26 / -10 %, per-scan correction -21 %, GICP and CPU the same; 3 and 1 guard resets.
+  - `iekf_s05` (scale 0.5): zig-zag 29 mm (-41 %, p95 -42 %), heading lag -12 ms, GICP -19 %, DLIO CPU -6 %,
+    correction -38 % (all better); but ATE 0.301 m (+79 %), RPE 10 m 2.28 % (+50 %), vertical RMSE +63 %, end
+    drift +112 % and heading error RMSE 1.27 deg (+160 %), every leg's ATE worse; 0 resets.
+  - `iekf_s1` (scale 1): zig-zag 38 mm (-23 %), heading lag -9 ms, RPE 1 m rotation -31 %, RPE 10 m rotation
+    -22 %, GICP -13 %, correction -31 %, DLIO CPU -3 % (all better); ATE 0.174 m and RPE 1 m 0.100 m (same);
+    RPE 10 m 1.78 % (+17 %, worse), end drift 0.165 m (+344 %, worse), heading error RMSE +18 %; 0 resets. The
+    best setting, and it fails the guard on exactly one thing: slow drift.
+- The drift is a heading wander (00:45-01:07). The filter's relative rotation over 10 m is better than the
+  default's, but its absolute heading wanders by about 0.5 deg, and 0.5 deg over 10 m is 9 cm of lateral error:
+  the whole RPE 10 m increase, and the end drift as well. Two explanations were tested with config-only 250 s
+  checks: (1) a larger scan floor (2 and 3 cm at scale 2, 3 cm at scale 5) made it worse (22 / 296 / 982 guard
+  resets): the floor only enters the filter's bookkeeping, so it inflates the posterior, loosens the next prior,
+  and the solver trusts the scan more, the opposite of its intent; (2) the gyro bias frozen (`noise/gyroBias` 0,
+  `init/gyroBiasStd` 1e-9) at scales 0.5 and 0.15: the same drift (yaw +1.45 / +3.33 deg against +1.27 / +3.48),
+  so the filter is not learning a wrong bias. What remains is structural: the keyframes are placed at the smoothed
+  pose, so their errors are correlated over the smoothing time (about 1/K scans) instead of independent, the
+  submap cannot average them out, and the map's heading random-walks with the filter following it; the drift
+  grows with the smoothing (scale 0.15 worst), which matches. With the observer each keyframe's error is the
+  scan's own, independent, and a registration against many keyframes averages it away.
+- A note on the logged NIS: it is computed on the posterior shift, and for that statistic a consistent filter
+  gives about 0.4 with these settings (the sum of the squared gains), not 6. Read that way, scale 0.5 is the
+  consistent setting on the quiet legs and the rocks-to-slope leg is 10 times over at every scale. The next build
+  switches the statistic to the raw-innovation form, for which 6 is the healthy value.
+
+**Round 4 outcome (2026-10-30 03:15).** The OUTPUT filter is the new default: `odom/geo/estimator:
+iekf_output` and `odom/iekf/hessianScale: 0.5` in `seyond_dlio_graph.yaml` (lunar copy regenerated; the code's
+own default for the estimator stays `observer`, so the husky, robin_w and live_real_flat configs are untouched;
+the code default of the scale is 0.5). Against the round-3 default over three runs: zig-zag -32 %, heading lag
+gone, heading error -39 %, roll and pitch errors -58 / -64 %, RPE rotation -56 % at 1 m and -47 % at 10 m, RPE
+10 m -14 % and ATE -15 % within noise; GICP -10 % and DLIO CPU -5 % as measured but unexplained by the mode
+(machine state). Against the 27 October baseline: zig-zag 57 ->
+34 mm, heading error 0.77 -> 0.30 deg, heading lag 47 -> -3 ms, RPE 10 m 2.04 -> 1.30 %, ATE 0.232 -> 0.143 m,
+GICP 18.8 -> 6.7 ms, DLIO CPU 145 -> 96 %, all SLAM CPU 490 -> 334 %. What the real rover needs before the switch
+is trusted there: the IMU noise densities (`odom/iekf/noise/*`) from the datasheet and a re-check of the scale on
+real data, since 0.5 was calibrated on the simulated sensor. Removed: the scratch variants of the sweep (scales
+20, 5, 2, 0.5, 0.15, 0.05 of the feedback mode, the floor and frozen-bias diagnostics, the observer-gain
+diagnostic, the output mode's scale-2 and 0.5 copies); kept `__iekf_s1.yaml` (the best feedback setting, for the
+record), `__iekf_out_s015.yaml`, `__iekf_out_s03.yaml`, `__lagfix.yaml`. The feedback mode itself stays as a
+switch (`estimator: iekf`): it fails the guard on this bag and is documented above. The earlier outcome note
+(01:15) follows for the record.
+
+**Round 4 outcome, first version (2026-10-30 01:15).** The feedback filter stays OFF by default (`odom/geo/estimator:
+observer`, the observer path bit-identical); the switch, the variants (`__iekf_s05/_s1/_s2.yaml`) and the
+finding stay for the real rover, where the IMU model and the bias states matter. What it proved: the GICP
+Hessian overstates the lateral information about 100 times (scale 0.15-0.5 is the honest range), the rocks leg
+by another factor 5, and any smoothing that feeds back into the keyframes turns into a heading random walk.
+Next: an output-only mode. Registration, keyframes and map exactly as in the default; the filter fuses the
+registration poses (as measurements, covariance (sH)^-1 plus floors, at the scan time) with the IMU only for the
+published odometry and pose, with no feedback into the map. Expected: the default's drift with the filter's
+zig-zag and lag figures. Deleted: the diverged check runs (`quick_check_iekf250_s5`, `_s2_f3`, `_s5_f3`) and
+the comparison files of the diverged scale-20/5/80 labels whose run folders were already gone.
+
+### Output-only mode (`odom/geo/estimator: iekf_output`, built 2026-10-30 01:23)
+
+The observer, the registration, the keyframes and the map run exactly as in the default; a second nominal state
+(`fstate_`, with its own covariance from the same `ErrorStateFilter`) is propagated with every IMU sample and, at
+every scan, updated with the registration pose as a plain Kalman measurement at the scan time (`updatePose()`,
+Joseph form; covariance (sH)^-1 plus the scan floor; the filter's own history gives the reference at the scan
+stamp and the entries after it carry the correction; a runaway guard falls back to the observer's state). Only
+the published odometry, pose, path and TF come from it (`publishedState()`); nothing feeds back into the
+registration or the map. Diagnostics 73 (filter-to-observer offset) and 74 (NIS of the update, chi-square with
+6 dof, about 6 when consistent); scorer fields `iekf_offset_mm`, `iekf_nis`; log line `iekf_output:`.
+
+- 250 s checks (one run each, 01:23-01:38) against the default's 250 s reference (ATE 0.103 m, yaw error RMSE
+  0.50 deg, heading lag +41 ms, zig-zag 41.9 mm, RPE 1 m 0.081 m / 0.45 deg, RPE 10 m 1.32 % / 0.53 deg,
+  vertical 0.020 m), in that order: scale 0.5: 0.113 / 0.58 / -2 / 25.4 / 0.077 / 0.19 / 1.15 / 0.29 / 0.023;
+  scale 0.15: 0.176 / 0.85 / -3 / 21.0 / 0.086 / 0.20 / 1.46 / 0.37 / 0.031; scale 2: 0.132 / 0.23 / -1 / 33.3 /
+  0.080 / 0.20 / 1.12 / 0.25 / 0.013. Mechanically right (no resets, lag gone, zig-zag halved), but the heading
+  still wandered at the small scales (end yaw drift +1.2 / +1.7 deg) although the map was the default's: that
+  part of the drift was never the map. Per-leg NIS: about 7 on the quiet legs and 22 on rocks-to-slope at scale
+  0.5 (3.4-4 and 11 at 0.15, 12-13 and 46 at 2), the same leg dependence as in the feedback mode.
+- The cause (01:40): DLIO's observer updates its gyro and accelerometer biases with gain 1.0 per scan
+  (`odom/geo/Kgb`, `Kab`), so its bias estimates random-walk with the registration noise (of the order of
+  0.1 deg/s and 0.05 m/s^2). Harmless for the observer, which resets its attitude and velocity to the scan every
+  50 ms, but the IMU samples (`imu_meas`) carry that bias, and a filter that trusts the gyro for seconds
+  integrates the wander. Confirmed two ways: the observer's bias gains zeroed in the config
+  (`__iekf_out_s05_kgb0.yaml`, 01:45-01:50): yaw error RMSE 0.58 -> 0.27 deg; and the fix in the code (01:51,
+  build 18): the output filter takes the raw sample (`imu_meas` plus the observer's bias) less its own bias
+  states, started from the calibrated values at the first registration.
+- 250 s checks with the fix (01:52-02:01), same order: scale 0.5: 0.144 / 0.31 / -5 / 24.1 / 0.072 / 0.18 / 1.16
+  / 0.24 / 0.011; scale 0.15: 0.111 / 0.20 / -5 / 22.1 / 0.078 / 0.19 / 1.08 / 0.23 / 0.013. Against the default:
+  zig-zag -45 %, RPE 1 m -5 to -11 %, RPE 1 m rotation -59 %, RPE 10 m -12 to -18 %, RPE 10 m rotation -55 %,
+  yaw error -38 to -60 %, vertical -40 %, lag gone; ATE within the single-run noise; the start-anchored end
+  drift 0.17-0.22 m against 0.03 (the filter sits 5-15 cm behind the registration while the rover accelerates
+  at the end of the window, NIS 10-30 there; to be judged on the full lap). Per-leg NIS at 0.15: 3.6-3.9 on the
+  quiet legs, 9.1 on rocks-to-slope; at 0.5: 6-7 and 19: the honest scale is about 0.3 on the quiet legs.
+- Labels (2 runs each at 02:03-02:43, a third run each at 02:44-03:04, all against the 3-run `solver`): every
+  scale passes the guard with no *worse* verdict anywhere. With three runs, scale 0.5 / 0.3 / 0.15: ATE 0.143 /
+  0.146 / 0.167 m (-15 / -13 / -1 %, within noise), heading error RMSE 0.30 / 0.23 / 0.34 deg (-39 / -53 / -30 %),
+  roll and pitch error RMSE about 0.06 deg (-52 to -64 %, better), heading lag -2.8 ms everywhere (gone, better),
+  RPE 1 m translation -4 to -6 % (within noise), RPE 1 m rotation 0.18-0.19 deg (-56 to -59 %, better), RPE 10 m
+  translation 1.30 / 1.36 / 1.38 % (-14 / -10 / -9 %, within noise), RPE 10 m rotation -47 to -51 % (better),
+  zig-zag RMS 34 / 34 / 27 mm (-32 / -32 / -45 %, better; p95 -32 to -44 %), end drift 0.017 / 0.032 / 0.019 m
+  (-54 / -15 / -49 %), vertical RMSE -12 to -21 %, GICP time -10 to -12 %, DLIO CPU -5 %, all SLAM CPU -4 %, hazard
+  update -6 % (all reported better, but this mode leaves the registration, the map and the backend untouched, so
+  the speed numbers are machine state of the night runs, not a gain of the filter). Runaway resets per lap (the published pose snapped to the observer's at the return-to-start jump,
+  where the registration moves more than 0.5 m in one scan): 0-1 at 0.5, 2-4 at 0.3, 0-2 at 0.15.
+- Chosen: scale 0.5 (best ATE, RPE 10 m, roll/pitch and end drift, the fewest resets, and the safer side on a
+  real IMU; 0.15 gives the lowest jitter, 0.3 the lowest heading error; variants `__iekf_out_s015.yaml` and
+  `__iekf_out_s03.yaml` stay).
 
 
 ## Goal

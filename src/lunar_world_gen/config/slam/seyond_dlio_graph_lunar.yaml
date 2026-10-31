@@ -5,7 +5,7 @@
 # The ONLY change against the source is dlio_odom_node odom/gravity:
 #   9.82 -> 1.62 m/s^2 (the world's <gravity>; world_info.yaml gravity_m_s2).
 # Everything below this header is the source file byte for byte apart from
-# that one line (source md5 a68d0520d8caa26a38b91f987b377c23).
+# that one line (source md5 ea5777d1ab99ec26f963e54b0d430986).
 # The comment "Must match lunar_surface.world" above odom/gravity is the
 # source's own: lunar_surface.world (the Earth-gravity A/B test world) still
 # needs the unmodified source file.
@@ -95,6 +95,23 @@ dlio_odom_node:
     odom/geo/correctAtScanTime: false        # Measure the GICP pose against the state at the scan's stamp (from the IMU propagation history) instead of the current state, then apply the error to the current state: removes the lag of the scan's age (about 40 ms) from every published pose. false = original DLIO. [def: false]
     odom/geo/stateHistorySec: 1.0            # Seconds of propagated-state history kept for it. [def: 1.0]
     odom/geo/scanTimeHorizontalOnly: false   # With correctAtScanTime: z keeps the current state as its reference (original DLIO) while x, y and attitude use the scan-time reference. [def: false]
+    odom/geo/estimator: iekf_output          # observer = DLIO's fixed-gain geometric observer (the keys above); iekf = an error-state Kalman update: a 15-state covariance propagated from the IMU noise below hands the registration its prior (the lambda0 keys are ignored) and conditions velocity and biases on the fused pose (measured 2026-10-30: smoothing that feeds the keyframes turns into a heading drift); iekf_output = the observer drives the registration and the map exactly as with observer, and the same error-state filter fuses the registration poses (at the scan time, covariance from the Hessian and the floors) with the IMU for the published odometry, pose, path and TF only, no feedback into the map (the default since 2026-10-30: zig-zag -33 %, heading lag gone, RPE rotation -50 %, roll/pitch errors halved on the lap). [def: iekf_output]
+    odom/iekf/hessianScale: 0.5              # Information (m^-2, rad^-2) per unit of the GICP Hessian: how much the scan counts against the IMU prediction. Calibrated on the lap bag 2026-10-30 (the Hessian overstates the lateral information about 100x; 0.15-0.5 are consistent, 0.3 measured best). [def: 0.5]
+    odom/iekf/priorFloor/attitudeStd: 8.7e-4     # The prior pose is never more certain than this (rad; 0.05 deg): the IMU model's own limit. [def: 8.7e-4]
+    odom/iekf/priorFloor/positionStd: 5.0e-3     # ... and this (m). [def: 5e-3]
+    odom/iekf/scanFloor/attitudeStd: 1.7e-3      # The scan's pose measurement is never more certain than this (rad; 0.1 deg), whatever the Hessian says. [def: 1.7e-3]
+    odom/iekf/scanFloor/positionStd: 1.0e-2      # ... and this (m). [def: 1e-2]
+    odom/iekf/reset/positionStd: 1.0             # Runaway guard: above this position 1-sigma (m) the covariance is reset to its initial values. [def: 1.0]
+    odom/iekf/reset/shift: 0.5                   # ... or when the pose shift of one scan exceeds this (m). [def: 0.5]
+    odom/iekf/noise/gyro: 2.0e-3             # IMU noise densities: gyro rad/s/sqrt(Hz) [def: 2e-3]
+    odom/iekf/noise/accel: 2.0e-2            # accel m/s^2/sqrt(Hz) [def: 2e-2]
+    odom/iekf/noise/gyroBias: 1.0e-5         # gyro bias random walk rad/s^2/sqrt(Hz) [def: 1e-5]
+    odom/iekf/noise/accelBias: 1.0e-4        # accel bias random walk m/s^3/sqrt(Hz) [def: 1e-4]
+    odom/iekf/init/attitudeStd: 0.01         # initial 1-sigma: attitude rad, position m, velocity m/s, biases rad/s and m/s^2
+    odom/iekf/init/positionStd: 0.01
+    odom/iekf/init/velocityStd: 0.1
+    odom/iekf/init/gyroBiasStd: 1.0e-3
+    odom/iekf/init/accelBiasStd: 1.0e-2
 
     # ── IMU setup ─────────────────────────────────────────────────────────────
     imu/calibration: true

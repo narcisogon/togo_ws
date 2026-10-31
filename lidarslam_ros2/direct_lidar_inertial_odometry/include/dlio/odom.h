@@ -31,6 +31,7 @@ threads and futures, so shutdown and shared state require explicit synchronizati
 // ROS
 #include "rclcpp/rclcpp.hpp"
 #include <deque>
+#include "dlio/iekf.h"
 #include <fstream>
 #include <random>
 #include <nav_msgs/msg/odometry.hpp>
@@ -93,6 +94,7 @@ public:
 private:
 
   struct State;
+  struct StateSnapshot { double stamp; float p[3]; float q[4]; };   // q as w, x, y, z
   struct ImuMeas;
   struct DiagnosticEvent;
 
@@ -303,6 +305,16 @@ private:
   Corrects pose, velocity, and sensor biases using the registered LiDAR pose.
   */
   void updateState();
+  void iekfUpdate(const Eigen::Vector3f& pin, const Eigen::Quaternionf& qin, const Eigen::Vector3f& p_ref,
+                  const Eigen::Quaternionf& q_ref, const Eigen::Quaternionf& qhat);
+  // Output filter (odom/geo/estimator: iekf_output): the registration pose as a measurement for the published state
+  void outputFilterUpdate(const Eigen::Vector3f& pin, const Eigen::Quaternionf& qin);
+  void syncOutputFilter(const char* why);
+  bool lookupHistory(const std::deque<StateSnapshot>& history, double stamp, Eigen::Vector3f& p,
+                     Eigen::Quaternionf& q) const;
+  const State& publishedState() const {
+    return (this->iekf_output_ && this->fstate_synced_) ? this->fstate_ : this->state;
+  }
 
   // Gated ground-plane z-constraint: fits the dominant ground plane from
   // near-ground points each scan and, when confidence gates pass, softly
@@ -811,6 +823,27 @@ private:
   int gicp_max_iter_;
   int gicp_min_iter_;                              // odom/gicp/minIterations
   bool geo_scan_time_horizontal_only_;   // odom/geo/scanTimeHorizontalOnly
+  // Error-state Kalman update in place of the fixed-gain observer (odom/geo/estimator: iekf)
+  std::string geo_estimator_;                 // "observer" | "iekf" | "iekf_output"
+  bool iekf_ {false};
+  bool iekf_output_ {false};                  // the observer runs unchanged; the filter only feeds the published odometry
+  State fstate_;                              // the output filter's nominal state, its own full biases
+  bool fstate_synced_ {false};
+  std::deque<StateSnapshot> fstate_history_;  // the filter's own state history for the scan-time reference
+  double iekf_init_std_[5] {1e-2, 1e-2, 1e-1, 1e-3, 1e-2};   // attitude, position, velocity, gyro bias, accel bias
+  std::atomic<float> iekf_offset_m_ {0.0f};   // |output filter - observer| position at the last update (m)
+  std::atomic<float> iekf_nis_last_ {0.0f};   // NIS of the last filter update (chi-square, 6 dof)
+  ErrorStateFilter iekf_filter_;              // the covariance; propagated and conditioned under geo.mtx
+  double iekf_hessian_scale_;                 // information per unit of the GICP Hessian (odom/iekf/hessianScale)
+  Eigen::Matrix<double, 6, 1> iekf_prior_floor_;   // variance floors of the prior pose: attitude x3, position x3
+  Eigen::Matrix<double, 6, 1> iekf_scan_floor_;    // variance floors of the scan's pose measurement
+  double iekf_reset_position_std_;                 // runaway guard: reset the covariance above this 1-sigma
+  double iekf_reset_shift_m_;                      // ... or when the pose shift exceeds this
+  uint64_t iekf_resets_ {0};
+  double iekf_nis_sum_ {0.0};
+  std::atomic<float> iekf_pos_std_ {0.0f};    // largest position 1-sigma of the filter (m), diagnostic
+  std::atomic<float> iekf_att_std_deg_ {0.0f};
+  uint64_t iekf_updates_ {0};
   std::atomic<float> last_gicp_iterations_ {0.0f};  // outer GICP iterations of the last alignment
   double gicp_transformation_ep_;
   double gicp_rotation_ep_;
@@ -829,7 +862,6 @@ private:
   // Correction measured against the state at the scan's stamp (odom/geo/correctAtScanTime)
   bool geo_correct_at_scan_time_;
   double geo_state_history_sec_;
-  struct StateSnapshot { double stamp; float p[3]; float q[4]; };   // q as w, x, y, z
   std::deque<StateSnapshot> state_history_;   // written by propagateState(), read by updateState(), under geo.mtx
   std::atomic<float> st_age_ms_ {0.0f};       // scan age at the correction (ms); 0 when off or without history
   std::atomic<float> st_miss_ {0.0f};

@@ -74,7 +74,8 @@ DIAG = {"status": 0, "raw_points": 6, "filtered_points": 7, "correction_t_m": 18
         # appended by the 2026-10-29 build (information weighting, scan-time correction); absent in older bags
         "iw_trans_info_min": 58, "iw_trans_info_max": 59, "iw_rot_info_min": 60, "iw_scale_min": 61,
         "st_age_ms": 62, "st_miss": 63,
-        "reg_x": 64, "reg_y": 65, "reg_z": 66, "ref_x": 67, "ref_y": 68, "ref_z": 69, "gicp_iterations": 70}
+        "reg_x": 64, "reg_y": 65, "reg_z": 66, "ref_x": 67, "ref_y": 68, "ref_z": 69, "gicp_iterations": 70,
+        "iekf_pos_std": 71, "iekf_att_std_deg": 72, "iekf_offset": 73, "iekf_nis": 74}
 PROCESSED = (5.0, 6.0)        # status codes: registration accepted / rejected
 
 
@@ -381,6 +382,12 @@ def scan_matching(diag: np.ndarray) -> dict:
         out["scan_time_misses"] = int((p[:, DIAG["st_miss"]] > 0.5).sum())
     if p.shape[1] > DIAG["gicp_iterations"]:
         out["gicp_iterations"] = _stats(p[:, DIAG["gicp_iterations"]], 2, (5, 50, 95))
+    if p.shape[1] > DIAG["iekf_att_std_deg"]:
+        out["iekf_pos_std_mm"] = _stats(p[:, DIAG["iekf_pos_std"]] * 1000.0, 2, (50, 95))
+        out["iekf_att_std_deg"] = _stats(p[:, DIAG["iekf_att_std_deg"]], 4, (50, 95))
+    if p.shape[1] > DIAG["iekf_nis"]:
+        out["iekf_offset_mm"] = _stats(p[:, DIAG["iekf_offset"]] * 1000.0, 2, (50, 95))
+        out["iekf_nis"] = _stats(p[:, DIAG["iekf_nis"]], 2, (50, 95))
     out["correction_mm"] = _stats(p[:, DIAG["correction_t_m"]] * 1000.0, 2, (50, 95, 99))
     out["correction_deg"] = _stats(p[:, DIAG["correction_r_deg"]], 4, (50, 95, 99))
     out["corrections_rejected"] = int((p[:, DIAG["correction_rejected"]] > 0.5).sum())
