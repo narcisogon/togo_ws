@@ -75,7 +75,8 @@ DIAG = {"status": 0, "raw_points": 6, "filtered_points": 7, "correction_t_m": 18
         "iw_trans_info_min": 58, "iw_trans_info_max": 59, "iw_rot_info_min": 60, "iw_scale_min": 61,
         "st_age_ms": 62, "st_miss": 63,
         "reg_x": 64, "reg_y": 65, "reg_z": 66, "ref_x": 67, "ref_y": 68, "ref_z": 69, "gicp_iterations": 70,
-        "iekf_pos_std": 71, "iekf_att_std_deg": 72, "iekf_offset": 73, "iekf_nis": 74}
+        "iekf_pos_std": 71, "iekf_att_std_deg": 72, "iekf_offset": 73, "iekf_nis": 74,
+        "vio_innov": 75, "vio_nis": 76}
 PROCESSED = (5.0, 6.0)        # status codes: registration accepted / rejected
 
 
@@ -388,6 +389,9 @@ def scan_matching(diag: np.ndarray) -> dict:
     if p.shape[1] > DIAG["iekf_nis"]:
         out["iekf_offset_mm"] = _stats(p[:, DIAG["iekf_offset"]] * 1000.0, 2, (50, 95))
         out["iekf_nis"] = _stats(p[:, DIAG["iekf_nis"]], 2, (50, 95))
+    if p.shape[1] > DIAG["vio_nis"] and np.any(p[:, DIAG["vio_innov"]] != 0):
+        out["vio_innov_mps"] = _stats(p[:, DIAG["vio_innov"]], 3, (50, 95))
+        out["vio_nis"] = _stats(p[:, DIAG["vio_nis"]], 2, (50, 95))
     out["correction_mm"] = _stats(p[:, DIAG["correction_t_m"]] * 1000.0, 2, (50, 95, 99))
     out["correction_deg"] = _stats(p[:, DIAG["correction_r_deg"]], 4, (50, 95, 99))
     out["corrections_rejected"] = int((p[:, DIAG["correction_rejected"]] > 0.5).sum())
@@ -475,9 +479,11 @@ def read_run_bag(path: Path) -> dict:
     reader.open(rosbag2_py.StorageOptions(uri=str(path), storage_id=""),
                 rosbag2_py.ConverterOptions(input_serialization_format="cdr", output_serialization_format="cdr"))
     types = {t.name: t.type for t in reader.get_all_topics_and_types()}
-    wanted = ("/dlio/odometry", "/tf", "/dlio/frontend_diagnostics", "/hazard/diagnostics")
+    wanted = ("/dlio/odometry", "/tf", "/dlio/frontend_diagnostics", "/hazard/diagnostics",
+              "/ov_msckf/odomimu", "/ov_msckf/points_msckf", "/ov_msckf/points_slam")
     cls = {k: get_message(types[k]) for k in wanted if k in types}
     odom, map_odom, diag, haz = [], [], [], []
+    vio, vio_feat = [], {"msckf": [], "slam": []}   # OpenVINS: IMU pose + body velocity, feature counts per frame
     while reader.has_next():
         topic, data, _ = reader.read_next()
         if topic not in cls:
@@ -494,6 +500,13 @@ def read_run_bag(path: Path) -> dict:
                                      p.x, p.y, p.z, q.x, q.y, q.z, q.w))
         elif topic == "/dlio/frontend_diagnostics":
             diag.append(list(m.data))
+        elif topic == "/ov_msckf/odomimu":
+            p, q, v = m.pose.pose.position, m.pose.pose.orientation, m.twist.twist.linear
+            vio.append((m.header.stamp.sec + m.header.stamp.nanosec * 1e-9, p.x, p.y, p.z, q.x, q.y, q.z, q.w,
+                        v.x, v.y, v.z))
+        elif topic in ("/ov_msckf/points_msckf", "/ov_msckf/points_slam"):
+            vio_feat["msckf" if topic.endswith("msckf") else "slam"].append(
+                (m.header.stamp.sec + m.header.stamp.nanosec * 1e-9, m.width * m.height))
         else:
             try:
                 haz.append(json.loads(m.data))
@@ -502,7 +515,45 @@ def read_run_bag(path: Path) -> dict:
     width = max((len(d) for d in diag), default=0)
     diag_arr = np.array([d + [np.nan] * (width - len(d)) for d in diag]) if diag else None
     return {"odom": np.array(sorted(odom)), "map_odom": np.array(sorted(map_odom)) if map_odom else None,
-            "diag": diag_arr, "hazard": haz}
+            "diag": diag_arr, "hazard": haz,
+            "vio": np.array(sorted(vio)) if vio else None,
+            "vio_features": {k: np.array(sorted(v)) for k, v in vio_feat.items() if v}}
+
+
+def vio_in_base(vio: np.ndarray, imu_in_base: np.ndarray) -> np.ndarray:
+    """The VIO's IMU poses as poses of base_link (tum rows): T_G_base = T_G_imu * inv(T_base_imu), with the rig's
+    IMU at imu_in_base (xyz, rotation identity: the rig is mounted level, x forward) in base_link."""
+    from scipy.spatial.transform import Rotation as R
+    rot = R.from_quat(vio[:, 4:8])
+    p_base = vio[:, 1:4] - rot.apply(np.broadcast_to(imu_in_base, (len(vio), 3)))
+    return np.c_[vio[:, 0], p_base, vio[:, 4:8]]
+
+
+def vio_report(run: dict, gt: np.ndarray, segments: dict | None, imu_in_base: np.ndarray) -> dict | None:
+    """Accuracy of the VIO trajectory against the truth (the same scorer as the SLAM path, per leg too), its
+    coverage of the run, and the tracked-feature counts per frame."""
+    vio = run.get("vio")
+    if vio is None or len(vio) < 50:
+        return None
+    est = vio_in_base(vio, imu_in_base)
+    acc = score(est, gt, segments=segments)
+    acc = {k: v for k, v in acc.items() if not k.startswith("_")}
+    out = {"messages": int(len(vio)), "first_stamp": round(float(vio[0, 0]), 3), "last_stamp": round(float(vio[-1, 0]), 3),
+           "speed_mps_mean": round(float(np.mean(np.linalg.norm(vio[:, 8:11], axis=1))), 3)}
+    out.update({k: acc[k] for k in ("ate_rmse_m", "ate_max_m", "along_rmse_m", "cross_rmse_m", "vertical_rmse_m",
+                                    "yaw_err_rmse_deg", "roll_err_rmse_deg", "pitch_err_rmse_deg", "drift_end_m",
+                                    "drift_end_pct", "drift_end_yaw_deg", "rpe_1m_mean_m", "rpe_1m_rot_mean_deg",
+                                    "rpe_10m_mean_pct", "rpe_10m_rot_mean_deg", "zigzag_rms_m", "segments") if k in acc})
+    for name, arr in run.get("vio_features", {}).items():
+        out[f"features_{name}"] = _stats(arr[:, 1].astype(float), 1, (5, 50))
+        if segments:
+            out[f"features_{name}_per_leg"] = {}
+            t_rel = arr[:, 0] - vio[0, 0]
+            for leg, (t0, t1) in segments.items():
+                m = (t_rel >= t0) & (t_rel < t1)
+                if m.sum() > 5:
+                    out[f"features_{name}_per_leg"][leg] = round(float(np.mean(arr[m, 1])), 1)
+    return out
 
 
 def _read_kv(path: Path | None) -> dict:
@@ -669,6 +720,8 @@ def main() -> int:
     ap.add_argument("--run-info", type=Path, default=None, help="run_info.txt (play_start / play_end epoch s)")
     ap.add_argument("--bag", type=Path, default=None, help="the replayed bag (caches the terrain picture there)")
     ap.add_argument("--heights", type=Path, default=Path.home() / "togo_assets/lunar/build/apollo16_core/heights")
+    ap.add_argument("--vio-imu-in-base", default="0.45 0 0.5",
+                    help="xyz of the VIO's IMU in base_link (m; the stereo rig's own IMU - 0.059 0 0.161275 for the imu_0 variant), to score the VIO as a base_link path")
     a = ap.parse_args()
     out_dir = a.out or a.run_bag.parent
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -692,6 +745,11 @@ def main() -> int:
     if a.resources and a.resources.is_file():
         metrics["resources"] = resources(a.resources, t0, t1, sm.get("scans_processed"))
     metrics["hazard"] = hazard(run["hazard"])
+    vio_m = vio_report(run, gt, segments, np.array([float(v) for v in a.vio_imu_in_base.split()]))
+    if vio_m:
+        metrics["vio"] = vio_m
+        np.savetxt(out_dir / "vio_odometry.tum", vio_in_base(run["vio"], np.array([float(v) for v in a.vio_imu_in_base.split()])),
+                   fmt="%.9f %.6f %.6f %.6f %.8f %.8f %.8f %.8f")
     mo = run["map_odom"]
     metrics["loop_closure"] = {"map_to_odom_updates": 0 if mo is None else int(len(mo)),
                                "max_correction_m": 0.0 if mo is None else round(float(np.max(np.linalg.norm(mo[:, 1:4], axis=1))), 4)}
@@ -732,6 +790,12 @@ def print_summary(m: dict) -> None:
     print(f"matching   GICP {g(sm, 'gicp_ms', 'mean'):.1f} ms (p95 {g(sm, 'gicp_ms', 'p95'):.1f})   correction "
           f"{g(sm, 'correction_mm', 'mean'):.1f} mm   scans {sm.get('scans_processed')} / {sm.get('lidar_callbacks_started')}"
           f"   rejected {sm.get('corrections_rejected')}")
+    if "vio" in m:
+        v = m["vio"]
+        feats = v.get("features_msckf", {})
+        print(f"vio        ATE {v.get('ate_rmse_m', float('nan')):.3f} m   RPE 10 m {v.get('rpe_10m_mean_pct', float('nan')):.2f} %"
+              f"   drift end {v.get('drift_end_m', float('nan')):.3f} m   yaw err {v.get('yaw_err_rmse_deg', float('nan')):.2f} deg"
+              f"   features/frame {feats.get('mean', float('nan')):.0f} (p5 {feats.get('p5', float('nan')):.0f})   messages {v.get('messages')}")
     if res and "processes" in res:
         d = res["processes"].get("dlio_odom_node", {})
         print(f"resources  dlio_odom_node RSS {d.get('rss_peak_mb', float('nan')):.0f} MB peak "

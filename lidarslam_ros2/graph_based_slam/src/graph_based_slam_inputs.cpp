@@ -462,6 +462,63 @@ void GraphBasedSlamComponent::receiveOdometry(const nav_msgs::msg::Odometry & ms
 
 /*
 Summary:
+Buffers the VIO's pose (the rig's IMU in the VIO's own frame), brought to base_link, for the adjacent VIO edges.
+*/
+void GraphBasedSlamComponent::receiveVio(const nav_msgs::msg::Odometry & msg)
+{
+  const auto & p = msg.pose.pose.position;
+  const auto & q = msg.pose.pose.orientation;
+  if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {return;}
+  Eigen::Isometry3d t_vio_rig = Eigen::Isometry3d::Identity();
+  t_vio_rig.linear() = Eigen::Quaterniond(q.w, q.x, q.y, q.z).normalized().toRotationMatrix();
+  t_vio_rig.translation() = Eigen::Vector3d(p.x, p.y, p.z);
+  VioPose sample;
+  sample.stamp = rclcpp::Time(msg.header.stamp).seconds();
+  sample.pose = t_vio_rig * vio_T_base_rig_.inverse();    // base_link in the VIO's frame
+  std::lock_guard<std::mutex> lock(vio_mtx_);
+  if (!vio_buffer_.empty()) {
+    const VioPose & last = vio_buffer_.back();
+    const bool jump = (t_vio_rig.translation() - (last.pose * vio_T_base_rig_).translation()).norm() > vio_edge_frame_jump_m_;
+    if (sample.stamp < last.stamp || jump) {
+      vio_buffer_.clear();                 // a restarted VIO: a new frame, nothing may span the restart
+      ++vio_frame_resets_;
+    } else if (sample.stamp == last.stamp) {
+      return;
+    }
+  }
+  vio_buffer_.push_back(sample);
+  if (vio_buffer_.size() > 400000) {
+    vio_buffer_.erase(vio_buffer_.begin(), vio_buffer_.begin() + static_cast<std::ptrdiff_t>(vio_buffer_.size() / 2));
+  }
+}
+
+/*
+Summary:
+The VIO's base_link pose at a stamp, interpolated between the two buffered samples around it; false when the
+buffer does not bracket the stamp within vio_edge_max_stamp_gap_s.
+*/
+bool GraphBasedSlamComponent::vioBasePoseAt(double stamp, Eigen::Isometry3d & out) const
+{
+  std::lock_guard<std::mutex> lock(vio_mtx_);
+  if (vio_buffer_.size() < 2) {return false;}
+  auto after = std::lower_bound(
+    vio_buffer_.begin(), vio_buffer_.end(), stamp,
+    [](const VioPose & s, double t) {return s.stamp < t;});
+  if (after == vio_buffer_.begin() || after == vio_buffer_.end()) {return false;}
+  const VioPose & b = *after;
+  const VioPose & a = *(after - 1);
+  if (b.stamp - a.stamp > vio_edge_max_stamp_gap_s_) {return false;}
+  const double w = (b.stamp - a.stamp) > 1e-9 ? (stamp - a.stamp) / (b.stamp - a.stamp) : 1.0;
+  const Eigen::Quaterniond qa(a.pose.linear());
+  const Eigen::Quaterniond qb(b.pose.linear());
+  out = Eigen::Isometry3d::Identity();
+  out.linear() = qa.slerp(w, qb).normalized().toRotationMatrix();
+  out.translation() = a.pose.translation() + w * (b.pose.translation() - a.pose.translation());
+  return true;
+}
+
+/*
+Summary:
 Creates a new odom-frame submap after sufficient travel, associates optional
 GNSS/IMU data, caches its cloud, and notifies graph and mapping consumers.
 */
@@ -495,6 +552,7 @@ void GraphBasedSlamComponent::tryCreateSubmap()
   // The pose is frontend odom at submap time. Pose graph optimization later
   // turns the optimized latest submap pose into a map->odom correction.
   lidarslam_msgs::msg::SubMap submap;
+  std::vector<uint16_t> submap_gray;      // texture/enabled: gray + 1 per point of this keyframe
   submap.header.stamp = acquisition_odom.header.stamp;
   submap.header.frame_id = global_frame_id_;
   submap.distance = accumulated_distance_;
@@ -522,8 +580,16 @@ void GraphBasedSlamComponent::tryCreateSubmap()
 
     pcl::toROSMsg(*local_cloud, submap.cloud);
     submap.cloud.header = latest_cloud_->header;
+    if (texture_enabled_) {
+      submap_gray = colorizeSubmap(*local_cloud, latest_cloud_->header.stamp, latest_odom_.child_frame_id);
+    }
   } else {
     submap.cloud = *latest_cloud_;
+    if (texture_enabled_) {
+      pcl::PointCloud<pcl::PointXYZI> local_cloud;
+      pcl::fromROSMsg(*latest_cloud_, local_cloud);
+      submap_gray = colorizeSubmap(local_cloud, latest_cloud_->header.stamp, latest_odom_.child_frame_id);
+    }
   }
   submap.cloud.header.frame_id = latest_odom_.child_frame_id;
 
@@ -551,6 +617,7 @@ void GraphBasedSlamComponent::tryCreateSubmap()
     map_array_msg_.header.stamp = latest_odom_.header.stamp;
     map_array_msg_.header.frame_id = global_frame_id_;
     map_array_msg_.submaps.push_back(submap);
+    if (texture_enabled_) {submap_gray_.push_back(std::move(submap_gray));}
     n = static_cast<int>(map_array_msg_.submaps.size());
 
     if (use_pcd_cache_) {
@@ -577,6 +644,146 @@ void GraphBasedSlamComponent::tryCreateSubmap()
   if (n % 50 == 0) {
     RCLCPP_INFO(get_logger(), "Odom input: %d submaps, distance: %.1fm", n, accumulated_distance_);
   }
+}
+
+/*
+Summary:
+Keeps the last texture/image_buffer_s seconds of left-camera images (mono8 or the first channel of a
+multi-channel image) for colouring keyframes.
+*/
+void GraphBasedSlamComponent::receiveImage(const sensor_msgs::msg::Image::SharedPtr msg)
+{
+  if (msg->width == 0 || msg->height == 0 || msg->data.empty()) {return;}
+  TextureImage image;
+  image.stamp = rclcpp::Time(msg->header.stamp).seconds();
+  image.width = msg->width;
+  image.height = msg->height;
+  image.step = msg->step;
+  if (msg->encoding == "mono8" || msg->encoding == "8UC1") {
+    image.data = msg->data;
+  } else {
+    // multi-channel 8-bit: keep the first channel (the images are gray anyway)
+    const uint32_t channels = msg->width > 0 ? msg->step / msg->width : 1;
+    if (channels == 0 || msg->step * msg->height > msg->data.size()) {return;}
+    image.step = msg->width;
+    image.data.resize(static_cast<std::size_t>(msg->width) * msg->height);
+    for (uint32_t v = 0; v < msg->height; ++v) {
+      const uint8_t * src = msg->data.data() + static_cast<std::size_t>(v) * msg->step;
+      uint8_t * dst = image.data.data() + static_cast<std::size_t>(v) * msg->width;
+      for (uint32_t u = 0; u < msg->width; ++u) {dst[u] = src[u * channels];}
+    }
+  }
+  std::lock_guard<std::mutex> lock(texture_mtx_);
+  texture_images_.push_back(std::move(image));
+  const double oldest_kept = texture_images_.back().stamp - texture_image_buffer_s_;
+  while (!texture_images_.empty() && texture_images_.front().stamp < oldest_kept) {
+    texture_images_.pop_front();
+  }
+}
+
+void GraphBasedSlamComponent::receiveCameraInfo(const sensor_msgs::msg::CameraInfo::SharedPtr msg)
+{
+  if (msg->k.size() < 9 || msg->k[0] <= 0.0 || msg->k[4] <= 0.0) {return;}
+  std::lock_guard<std::mutex> lock(texture_mtx_);
+  texture_fx_ = msg->k[0];
+  texture_fy_ = msg->k[4];
+  texture_cx_ = msg->k[2];
+  texture_cy_ = msg->k[5];
+  texture_image_width_ = msg->width;
+  texture_image_height_ = msg->height;
+  texture_intrinsics_valid_ = true;
+}
+
+/*
+Summary:
+Looks the camera's optical frame up in TF (once; the rig is fixed) and keeps base_link -> camera.
+*/
+bool GraphBasedSlamComponent::textureExtrinsics(const std::string & base_frame)
+{
+  if (texture_extrinsics_valid_) {return true;}
+  try {
+    const auto tf = tfbuffer_.lookupTransform(texture_camera_frame_, base_frame, tf2::TimePointZero);
+    texture_T_cam_base_ = tf2::transformToEigen(tf.transform);
+    texture_extrinsics_valid_ = true;
+    const Eigen::Vector3d p = texture_T_cam_base_.inverse().translation();
+    RCLCPP_INFO(
+      get_logger(), "Textured map: camera %s at (%.3f, %.3f, %.3f) in %s",
+      texture_camera_frame_.c_str(), p.x(), p.y(), p.z(), base_frame.c_str());
+    return true;
+  } catch (const tf2::TransformException & e) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 10000, "Textured map: no TF %s -> %s yet (%s)",
+      base_frame.c_str(), texture_camera_frame_.c_str(), e.what());
+    return false;
+  }
+}
+
+/*
+Summary:
+Gray value per point of a keyframe cloud (base_link axes at the keyframe's stamp) from the image nearest that
+stamp: projected through the camera, with a coarse depth buffer so a point behind a nearer one in the same
+image cell is not painted with the nearer surface. 0 = not seen (outside the image, occluded, no image).
+*/
+std::vector<uint16_t> GraphBasedSlamComponent::colorizeSubmap(
+  const pcl::PointCloud<pcl::PointXYZI> & local_cloud, const rclcpp::Time & stamp,
+  const std::string & base_frame)
+{
+  std::vector<uint16_t> gray(local_cloud.size(), 0);
+  if (!textureExtrinsics(base_frame)) {return gray;}
+  TextureImage image;
+  double fx, fy, cx, cy;
+  {
+    std::lock_guard<std::mutex> lock(texture_mtx_);
+    if (!texture_intrinsics_valid_ || texture_images_.empty()) {++texture_submaps_without_image_; return gray;}
+    const double t = stamp.seconds();
+    const TextureImage * best = nullptr;
+    for (const auto & im : texture_images_) {
+      if (best == nullptr || std::fabs(im.stamp - t) < std::fabs(best->stamp - t)) {best = &im;}
+    }
+    if (best == nullptr || std::fabs(best->stamp - t) > texture_max_image_age_s_) {
+      ++texture_submaps_without_image_;
+      return gray;
+    }
+    image = *best;
+    fx = texture_fx_; fy = texture_fy_; cx = texture_cx_; cy = texture_cy_;
+  }
+  const int cell = std::max(1, texture_depth_cell_px_);
+  const int cells_x = (static_cast<int>(image.width) + cell - 1) / cell;
+  const int cells_y = (static_cast<int>(image.height) + cell - 1) / cell;
+  std::vector<float> nearest(static_cast<std::size_t>(cells_x) * cells_y, std::numeric_limits<float>::infinity());
+  std::vector<float> depth(local_cloud.size(), -1.0F);
+  std::vector<int> px(local_cloud.size(), -1);
+  std::vector<int> py(local_cloud.size(), -1);
+  const Eigen::Matrix3d r = texture_T_cam_base_.linear();
+  const Eigen::Vector3d tr = texture_T_cam_base_.translation();
+  for (std::size_t k = 0; k < local_cloud.size(); ++k) {
+    const auto & p = local_cloud.points[k];
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {continue;}
+    const Eigen::Vector3d c = r * Eigen::Vector3d(p.x, p.y, p.z) + tr;
+    if (c.z() < 0.05) {continue;}
+    const int u = static_cast<int>(std::floor(fx * c.x() / c.z() + cx));
+    const int v = static_cast<int>(std::floor(fy * c.y() / c.z() + cy));
+    if (u < 0 || v < 0 || u >= static_cast<int>(image.width) || v >= static_cast<int>(image.height)) {continue;}
+    px[k] = u;
+    py[k] = v;
+    depth[k] = static_cast<float>(c.z());
+    float & near = nearest[static_cast<std::size_t>(v / cell) * cells_x + u / cell];
+    near = std::min(near, depth[k]);
+  }
+  std::size_t coloured = 0;
+  for (std::size_t k = 0; k < local_cloud.size(); ++k) {
+    if (px[k] < 0) {continue;}
+    const float near = nearest[static_cast<std::size_t>(py[k] / cell) * cells_x + px[k] / cell];
+    if (depth[k] > near + static_cast<float>(texture_depth_tolerance_m_)) {continue;}
+    const uint8_t g = image.data[static_cast<std::size_t>(py[k]) * image.step + px[k]];
+    gray[k] = static_cast<uint16_t>(g) + 1;
+    ++coloured;
+  }
+  ++texture_submaps_coloured_;
+  RCLCPP_INFO_THROTTLE(
+    get_logger(), *get_clock(), 30000, "Textured map: keyframe %zu of %zu points coloured (%zu keyframes done, %zu without an image)",
+    coloured, local_cloud.size(), texture_submaps_coloured_, texture_submaps_without_image_);
+  return gray;
 }
 
 }  // namespace graphslam

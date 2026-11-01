@@ -33,6 +33,8 @@ def generate_launch_description():
 
     # ── Behaviour flags ──────────────────────────────────────────────────────────
     use_sim_time                     = LaunchConfiguration('use_sim_time')
+    gomp_spincount                   = LaunchConfiguration('gomp_spincount')
+    omp_env = {'GOMP_SPINCOUNT': gomp_spincount}   # OpenMP worker spin budget (libgomp) for the SLAM nodes; 0 = sleep between regions
     rviz                             = LaunchConfiguration('rviz')
     rviz_config                      = LaunchConfiguration('rviz_config')
     map_save_period                  = LaunchConfiguration('map_save_period')
@@ -80,6 +82,7 @@ def generate_launch_description():
         package='direct_lidar_inertial_odometry',
         executable='dlio_odom_node',
         name='dlio_odom_node',
+        additional_env=omp_env,
         output='screen',
         emulate_tty=True,
         respawn=True,
@@ -123,11 +126,41 @@ def generate_launch_description():
         ],
     )
 
+    # Optional visual-inertial odometry (OpenVINS ov_msckf, its own process; GPL-3, never linked here).
+    # Reads the stereo rig's images and IMU named inside vio_config's companion yaml files and publishes
+    # /ov_msckf/odomimu (IMU pose in its own gravity-aligned frame, body-frame velocity in the twist).
+    vio = LaunchConfiguration('vio')
+    vio_config = LaunchConfiguration('vio_config')
+    vio_dark_mask_threshold = LaunchConfiguration('vio_dark_mask_threshold')
+    vio_dark_mask_dilate_px = LaunchConfiguration('vio_dark_mask_dilate_px')
+    vio_diverge_velocity_mps = LaunchConfiguration('vio_diverge_velocity_mps')
+    texture_map = LaunchConfiguration('texture_map')
+    frontend_map = LaunchConfiguration('frontend_map')
+    hazard = LaunchConfiguration('hazard')
+    vio_node = Node(
+        package='ov_msckf',
+        executable='run_subscribe_msckf',
+        name='ov_msckf',
+        namespace='ov_msckf',   # its topics are relative names (odomimu, poseimu, points_*): this puts them under /ov_msckf/
+        output='screen',
+        emulate_tty=True,
+        condition=IfCondition(vio),
+        respawn=True,            # the node exits on divergence (vio_diverge_velocity_mps) and comes back to initialise anew
+        respawn_delay=1.0,
+        arguments=[vio_config],
+        parameters=[{'use_sim_time': use_sim_time}, {'config_path': vio_config},
+                    {'dark_mask_threshold': vio_dark_mask_threshold},     # the rover's shadow and the sky masked per frame
+                    {'dark_mask_dilate_px': vio_dark_mask_dilate_px},
+                    {'diverge_velocity_mps': vio_diverge_velocity_mps}, {'diverge_hold_s': 1.0}],
+    )
+
     # DLIO local map accumulator.
     dlio_map_node = Node(
         package='direct_lidar_inertial_odometry',
         executable='dlio_map_node',
         name='dlio_map_node',
+        condition=IfCondition(frontend_map),   # nothing in this stack reads /dlio/map (16 % of a core, RAM grows with the map)
+        additional_env=omp_env,
         output='screen',
         emulate_tty=True,
         parameters=[
@@ -148,6 +181,7 @@ def generate_launch_description():
         package='graph_based_slam',
         executable='graph_based_slam_node',
         name='graph_based_slam',
+        additional_env=omp_env,
         output='screen',
         emulate_tty=True,
         parameters=[
@@ -156,10 +190,15 @@ def generate_launch_description():
             {'odom_frame_id':                  odom_frame},
             {'global_frame_id':                'map'},
             {'odom_input_cloud_in_odom_frame':  True},
+            {'texture/enabled':                ParameterValue(texture_map, value_type=bool)},   # coloured map from the left camera
+            {'hazard/enabled':                 ParameterValue(hazard, value_type=bool)},        # hazard:=false = map only
         ],
         remappings=[
             ('odom_input',  '/dlio/odometry'),
             ('cloud_input', '/dlio/deskewed'),
+            ('image_input',       '/husky/sensors/stereo_rig/left/image_raw'),     # texture_map
+            ('camera_info_input', '/husky/sensors/stereo_rig/left/camera_info'),
+            ('vio_input',   '/ov_msckf/odomimu'),   # used only with use_vio_edge (and the vio launch argument)
         ],
     )
 
@@ -180,6 +219,7 @@ def generate_launch_description():
             '-p', 'publish_period_sec:=0.5',
         ],
         output='screen',
+        condition=IfCondition(LaunchConfiguration('rviz')),   # a display helper: not without RViz (11 % of a core in replays)
     )
 
     # Ground-truth path aligned to the frontend's initial pose.
@@ -293,6 +333,31 @@ def generate_launch_description():
 
         # ── Behaviour flags ───────────────────────────────────────────────────────
         DeclareLaunchArgument('use_sim_time', default_value='true'),
+        DeclareLaunchArgument('vio', default_value='false',
+                              description='start OpenVINS (ov_msckf) on the stereo rig alongside DLIO'),
+        DeclareLaunchArgument('vio_dark_mask_threshold', default_value='0',
+                              description='OpenVINS: image pixels at or below this value (the rover shadow, the sky) are masked for '
+                                          'feature tracking, per frame (0 = off; scripts/openvins_patch_dark_mask.py)'),
+        DeclareLaunchArgument('vio_dark_mask_dilate_px', default_value='15',
+                              description='OpenVINS: the dark mask is grown by this many pixels so shadow edges are masked too'),
+        DeclareLaunchArgument('gomp_spincount', default_value='300000',
+                              description='libgomp GOMP_SPINCOUNT for DLIO, its map node and the backend: how long OpenMP '
+                                          'workers spin for the next region before sleeping (300000 = library default, 0 = '
+                                          'passive; the spinning showed as 20 threads at 3 percent each in the profile)'),
+        DeclareLaunchArgument('texture_map', default_value='false',
+                              description='graph_based_slam colours every keyframe from the stereo rig left camera and '
+                                          'publishes /modified_map_colored (x y z rgb intensity time) plus map_colored.pcd on save'),
+        DeclareLaunchArgument('frontend_map', default_value='false',
+                              description='true: run dlio_map_node, the frontend map accumulator (/dlio/map from the keyframe '
+                                          'clouds, in odom). Nothing in this stack reads it; the backend builds the corrected maps.'),
+        DeclareLaunchArgument('hazard', default_value='true',
+                              description='false: no hazard mapping in the backend (pose graph and maps only)'),
+        DeclareLaunchArgument('vio_diverge_velocity_mps', default_value='3.0',
+                              description='OpenVINS: exit (and respawn) when its speed stays above this for 1 s, i.e. it has '
+                                          'diverged; 0 = never (scripts/openvins_patch_diverge_exit.py)'),
+        DeclareLaunchArgument('vio_config',
+                              default_value='/home/er4-user/ws/src/lunar_world_gen/config/vio/estimator_config.yaml',
+                              description='OpenVINS estimator_config.yaml (its companion yaml files sit next to it)'),
         DeclareLaunchArgument('map_save_period', default_value='60'),
         DeclareLaunchArgument('enable_map_save_pulse', default_value='false'),
            
@@ -349,6 +414,7 @@ def generate_launch_description():
         cloud_slant_corrector,
         dlio_odom_node,
         dlio_map_node,
+        vio_node,
         graph_node,
         frontend_path,
         reference_path,

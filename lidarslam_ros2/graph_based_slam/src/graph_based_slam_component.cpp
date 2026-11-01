@@ -153,6 +153,32 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   get_parameter("use_distance_loop_candidates", use_distance_loop_candidates_);
   declare_parameter("adjacent_edge_info_weight", 1000.0);
   get_parameter("adjacent_edge_info_weight", adjacent_edge_info_weight_);
+  // VIO edges (use_vio_edge): the rig's VIO relative pose between adjacent submaps as a second constraint
+  declare_parameter("use_vio_edge", false);
+  get_parameter("use_vio_edge", use_vio_edge_);
+  declare_parameter("vio_edge_info_weight_trans", 400.0);
+  get_parameter("vio_edge_info_weight_trans", vio_edge_info_weight_trans_);
+  declare_parameter("vio_edge_info_weight_rot", 10000.0);
+  get_parameter("vio_edge_info_weight_rot", vio_edge_info_weight_rot_);
+  declare_parameter("vio_edge_auto_scale", false);
+  get_parameter("vio_edge_auto_scale", vio_edge_auto_scale_);
+  declare_parameter("vio_edge_auto_scale_target_nis", 3.0);
+  get_parameter("vio_edge_auto_scale_target_nis", vio_edge_auto_scale_target_nis_);
+  declare_parameter("vio_edge_max_stamp_gap_s", 0.15);
+  get_parameter("vio_edge_max_stamp_gap_s", vio_edge_max_stamp_gap_s_);
+  declare_parameter("vio_edge_frame_jump_m", 0.5);
+  get_parameter("vio_edge_frame_jump_m", vio_edge_frame_jump_m_);
+  declare_parameter("vio_edge_max_speed_mps", 2.0);
+  get_parameter("vio_edge_max_speed_mps", vio_edge_max_speed_mps_);
+  {
+    std::vector<double> rig_xyz;
+    declare_parameter("vio_rig_in_base_xyz", std::vector<double>{0.45, 0.0, 0.50});
+    get_parameter("vio_rig_in_base_xyz", rig_xyz);
+    if (rig_xyz.size() == 3) {
+      vio_T_base_rig_ = Eigen::Isometry3d::Identity();
+      vio_T_base_rig_.translation() = Eigen::Vector3d(rig_xyz[0], rig_xyz[1], rig_xyz[2]);
+    }
+  }
   declare_parameter("adjacent_edge_info_auto_scale", false);
   get_parameter("adjacent_edge_info_auto_scale", adjacent_edge_info_auto_scale_);
   declare_parameter("adjacent_edge_info_auto_scale_target_nis", 6.0);
@@ -426,6 +452,8 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   get_parameter("dem/enabled", dem_enabled_);
   declare_parameter("dem/update_period_sec", 10.0);
   get_parameter("dem/update_period_sec", dem_update_period_sec_);
+  declare_parameter("dem/write_period_sec", 60.0);
+  get_parameter("dem/write_period_sec", dem_write_period_sec_);
   declare_parameter("dem/storage_resolution_m", 0.10);
   get_parameter("dem/storage_resolution_m", dem_storage_resolution_m_);
   declare_parameter("dem/preview_resolution_m", 0.50);
@@ -1228,6 +1256,23 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   get_parameter("publish_modified_map_timed", publish_modified_map_timed_);
   declare_parameter("modified_map_timed_leaf_size", -1.0);
   get_parameter("modified_map_timed_leaf_size", modified_map_timed_leaf_size_);
+  declare_parameter("modified_map_timed_min_interval_sec", 5.0);
+  get_parameter("modified_map_timed_min_interval_sec", modified_map_timed_min_interval_sec_);
+  // Textured map from the stereo rig's left camera
+  declare_parameter("texture/enabled", false);
+  get_parameter("texture/enabled", texture_enabled_);
+  declare_parameter("texture/camera_frame", std::string("stereo_rig_left_camera_optical_frame"));
+  get_parameter("texture/camera_frame", texture_camera_frame_);
+  declare_parameter("texture/max_image_age_s", 0.03);
+  get_parameter("texture/max_image_age_s", texture_max_image_age_s_);
+  declare_parameter("texture/leaf_size", 0.10);
+  get_parameter("texture/leaf_size", texture_leaf_size_);
+  declare_parameter("texture/depth_cell_px", 4);
+  get_parameter("texture/depth_cell_px", texture_depth_cell_px_);
+  declare_parameter("texture/depth_tolerance_m", 0.3);
+  get_parameter("texture/depth_tolerance_m", texture_depth_tolerance_m_);
+  declare_parameter("texture/image_buffer_s", 3.0);
+  get_parameter("texture/image_buffer_s", texture_image_buffer_s_);
   declare_parameter("submap_assembly_reuse_translation_eps_m", 1.0e-3);
   get_parameter(
     "submap_assembly_reuse_translation_eps_m",
@@ -1438,6 +1483,24 @@ void GraphBasedSlamComponent::initializePubSub()
       "cloud_input", rclcpp::SensorDataQoS(),
       std::bind(&GraphBasedSlamComponent::receiveCloud, this, std::placeholders::_1));
     RCLCPP_INFO(get_logger(), "Direct odom+cloud input mode enabled");
+    if (texture_enabled_) {
+      image_sub_ = create_subscription<sensor_msgs::msg::Image>(
+        "image_input", rclcpp::SensorDataQoS(),
+        std::bind(&GraphBasedSlamComponent::receiveImage, this, std::placeholders::_1));
+      camera_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
+        "camera_info_input", rclcpp::SensorDataQoS(),
+        std::bind(&GraphBasedSlamComponent::receiveCameraInfo, this, std::placeholders::_1));
+      RCLCPP_INFO(
+        get_logger(), "Textured map: keyframes coloured from image_input (camera frame %s, leaf %.2f m)",
+        texture_camera_frame_.c_str(), texture_leaf_size_);
+    }
+    if (use_vio_edge_) {
+      vio_sub_ = create_subscription<nav_msgs::msg::Odometry>(
+        "vio_input", rclcpp::SensorDataQoS(),
+        std::bind(&GraphBasedSlamComponent::receiveVio, this, std::placeholders::_1));
+      RCLCPP_INFO(get_logger(), "VIO edges on adjacent submaps enabled (vio_input; weights trans %.1f rot %.1f, auto-scale %s)",
+        vio_edge_info_weight_trans_, vio_edge_info_weight_rot_, vio_edge_auto_scale_ ? "on" : "off");
+    }
   }
 
   // Loop search cadence and periodic modified-map publishing run on their
@@ -1453,6 +1516,11 @@ void GraphBasedSlamComponent::initializePubSub()
   if (publish_modified_map_timed_) {
     modified_map_timed_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
       "modified_map_timed",
+      rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
+  }
+  if (texture_enabled_) {
+    modified_map_colored_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
+      "modified_map_colored",
       rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
   }
 

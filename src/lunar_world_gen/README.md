@@ -95,7 +95,7 @@ Run these in a WSL terminal, after `cd $REPO`. Each script and tool lists its op
 | folder | contents |
 |---|---|
 | `scripts/` | The commands above. Simulation: `run_apollo16_sim.sh`, `open_gui.sh`, `env.sh`, `apollo16_lib.sh`. SLAM benchmark: `replay_slam_bag.sh`, `benchmark_slam.sh`, `rescore_slam_runs.sh`. Tests: `run_tests.sh`. |
-| `tools/` | Single-purpose programs. SLAM scoring: `slam_eval.py`, `slam_compare.py`, `gt_check.py`, `trim_bag.py`, `proc_sampler.py`, `slam_replay_check.py`. Bag recording: `bag_record/`. Gazebo checks: `bench_world.py`, `lidar_capture.py`, `run_robot_tests.py`, `rover_drive_test.py`, `render_views.py`. Build helpers: `dtm_extract.py`, `robot_collision_simplify.py`, `verify_rock_glb.py`, `gz_physics_bullet_lunar/` (the patched physics plugin). |
+| `tools/` | Single-purpose programs. SLAM scoring: `slam_eval.py`, `slam_compare.py`, `slam_budget.py`, `gt_check.py`, `trim_bag.py`, `proc_sampler.py`, `slam_replay_check.py`. Bag recording: `bag_record/`. Gazebo checks: `bench_world.py`, `lidar_capture.py`, `run_robot_tests.py`, `rover_drive_test.py`, `render_views.py`. Build helpers: `dtm_extract.py`, `robot_collision_simplify.py`, `verify_rock_glb.py`, `gz_physics_bullet_lunar/` (the patched physics plugin). |
 | `lunar_world_gen/` | The world generator (Python): terrain, rocks, meshes, SDF, validation. |
 | `launch/` | `apollo16_sim.launch.py`, which `run_apollo16_sim.sh` starts. |
 | `config/` | `apollo16_core.yaml` (every generator parameter); `slam/` (the lunar DLIO config); `gui/`; `robot/`. |
@@ -481,7 +481,9 @@ COMBINED_PARAM_FILE=/home/er4-user/ws/src/lunar_world_gen/config/slam/seyond_dli
 - For `lunar_surface.world` (9.82) keep using the unmodified file.
 - After editing your `seyond_dlio_graph.yaml`, refresh the copy:
   `python3 $REPO/src/lunar_world_gen/config/slam/make_lunar_dlio_config.py` (`--check` only reports; the test
-  suite also checks it).
+  suite also checks it), then the switch variants in `config/slam/variants/` (the lunar copy with a few values
+  changed, for `replay_slam_bag.sh --config`): `python3 $REPO/src/lunar_world_gen/config/slam/make_variants.py`
+  (`--check` reports stale ones; the variant table is in that script).
 
 **Other gravity assumptions in the SLAM stack** (checked in the source):
 
@@ -538,7 +540,42 @@ COMBINED_PARAM_FILE=/home/er4-user/ws/src/lunar_world_gen/config/slam/seyond_dli
   - `~/togo_assets/lunar/bags/apollo16_lap1_20261027` is the default and the benchmark standard: 6 minutes, made of
     the 17.8 s standstill and one 123 m lap.
   - `apollo16_loop_20261027` is the full 13-minute recording, with two laps.
+  - `apollo16_stereo3_lap1_20261031_rt` is the same route with the stereo rig (two 640x480 cameras at 20 Hz
+    looking 20 deg down, the rig's 400 Hz IMU) recorded on 2026-10-31 night and rewritten in simulation-time
+    order: the benchmark bag for the visual-inertial work (`replay_slam_bag.sh --vio`, below).
+    `apollo16_stereo2_lap1_20261031_rt` is the same rover with level cameras (fine for LiDAR, the VIO loses the
+    ground at the slope crest), and `apollo16_stereo_lap1_20261031*` the first stereo recording, whose rig did
+    not turn with the rover (its README says so): LiDAR scores only.
   - The route crosses a rock field, a slope and a featureless plain. Each bag's `README.md` describes it.
+- **Visual-inertial odometry alongside (`--vio`, 2026-10-31):** the replay starts OpenVINS (`ov_msckf`, a separate
+  process built in the container by `scripts/setup_openvins.sh`, configured by `config/vio/estimator_config.yaml`;
+  `--vio-config FILE` for another, e.g. `estimator_config_imu0.yaml` to run it on imu_0) on the rig's images and
+  IMU, records `/ov_msckf/odomimu` and its feature clouds, and the score gets a `vio` block: OpenVINS's own path
+  against the truth, per leg, with its feature counts (`slam_eval.py --vio-imu-in-base`, the rig IMU's place in
+  base_link). Whether DLIO or the backend *use* the VIO is the SLAM config's business (`odom/iekf/vio/enabled`,
+  `odom/gicp/prior/vioMode`, `use_vio_edge`: variants `__vio_out`, `__vio_prior`, `__vio_edge`).
+- **Textured map (`--texture`, 2026-11-01):** the graph backend colours every keyframe cloud from the rig's left
+  image nearest its stamp (projection through the TF extrinsics with a depth buffer, so a rock does not paint the
+  ground behind it; points outside the camera's view stay unpainted) and publishes `/modified_map_colored`
+  (x y z rgb intensity time, voxelised, the same cadence as `/modified_map_timed`; the mapping RViz config shows
+  it as `ColoredMap`). The run's SLAM output gets `map_colored.pcd` on save, and
+  `tools/colored_map_view.py MAP.pcd` draws it without RViz. The frontend is untouched; the work is a few
+  milliseconds per keyframe in the backend. `--no-hazard` runs the backend without the hazard mapper when only
+  the maps are wanted. Parameters: `texture/*` in the graph section of the SLAM config; launch arguments
+  `texture_map`, `hazard`.
+- **Lean by default (2026-11-01, round 6 of `docs/SLAM_SPEEDUP_PLAN.md`):** only the estimate runs at sensor
+  rate; every map product has its own cadence and is built incrementally. The DEM accumulates the points the map
+  gained since its last pass and writes its rasters every `dem/write_period_sec`; the hazard mapper takes
+  `hazard/input_rate_hz` scans per second and no longer re-inflates the whole grid when it grows
+  (`hazard/grow_margin_m` grows it ahead of the rover); the timed and coloured maps go out at most every
+  `modified_map_timed_min_interval_sec`; DLIO publishes its deskewed cloud on every `pointcloud/publishEveryNth`
+  scan (the backend builds each submap from one cloud, the hazard mapper samples the stream); the RViz path
+  helper runs only with RViz, and `dlio_map_node`, the frontend map accumulator nothing in the stack reads, only
+  with `--frontend-map` (launch `frontend_map`). All SLAM processes together went from 343 % to 146 % of a core
+  on the lap bag (RAM 2.2 to 1.7 GB) with every accuracy verdict neutral; an old-load control on the same
+  binaries scores the same as the new defaults. `--omp-passive` (launch `gomp_spincount:=0`) makes the OpenMP
+  workers sleep between parallel regions: 10 points less CPU, but the registration pays a wake-up latency, so
+  it stays off.
 
 ### Benchmarking the SLAM
 
@@ -558,6 +595,22 @@ python3 src/lunar_world_gen/tools/slam_compare.py --baseline baseline --candidat
 change *better* or *worse* only when the change exceeds twice the run-to-run spread; otherwise it shows `~`.
 Signed metrics (vertical drift, heading lag) count as better when they move closer to 0. The tables and the
 pictures are saved next to the runs: `slam_runs/compare__*.md/.png` and `summary__*.md/.png`.
+
+`tools/slam_budget.py RUN/metrics.json` checks a run's resources against `config/slam/slam_budget.json` (CPU of
+all SLAM processes and of the backend, RAM peak, DLIO CPU per scan, GICP time, hazard updates and drops) and
+exits 1 when a limit is exceeded; the replay prints its verdict after the score (`budget.txt` in the run). The
+limits sit well above the measured defaults, so only a real regression trips them; the comparison above is the
+finer judge. The scored path is DLIO's own as long as no loop closure fires (the map-to-odom correction stays
+identity on the lap bag), and it scatters by about 0.03 m of ATE from run to run.
+
+To A/B a build rather than a setting, `--overlay-setup PATH` (a container path to a ROS overlay's
+`setup.bash`, sourced after the SLAM workspace) lets a package built elsewhere, say DLIO as committed in a
+scratch workspace, replace the workspace's one for the run while launch, config and the other nodes stay the
+same; `run_info.txt` records it as `overlay_setup=`. To register another LiDAR of the bag, `--lidar-topic T`
+and `--scan-period S` (the period of DLIO's synthetic per-point timing, 0.05 for the 20 Hz mast LiDAR) with the
+matching config variant: `config/slam/variants/seyond_dlio_graph_lunar__lidar360.yaml` carries the mast
+sensor's extrinsics, its frame for the hazard mapper's ray origins and a 1.5 m crop box, since from the mast the
+rover's own body is in view.
 
 **How the accuracy is measured.**
 
@@ -673,8 +726,14 @@ python3 src/lunar_world_gen/tools/gt_check.py ~/togo_assets/lunar/bags/apollo16_
   and prints the plan.
 - **One lap.** `trim_bag.py --laps 1` keeps the first lap. It cuts 3 s after the rover's closest pass by its
   start, and `--segments` writes the legs' time spans for the per-leg scores. Then write a short `README.md` into
-  the new bag folder, like the existing bags have.
+  the new bag folder, like the existing bags have. A recording of a single lap (`record_bag.sh --laps 1`) ends at that pass, so it is kept whole; the trim still writes `segments.json`.
+- **Order and pace.** A recording made under load (the stereo rig's images) can hold messages out of order and carries the recording's wall clock as log time, so it replays at the recording's real-time factor. `python3 src/lunar_world_gen/tools/retime_bag.py BAG BAG_rt` rewrites it in simulation-time order and pace (`tools/bag_record/clock_order.py` counts the backward steps before and after); benchmark on the `_rt` bag.
 - **Logs.** The recording's logs end up in the bag folder under `recording/`.
+- **Another sensor set.** `--sim-args 'extra_xacro_args:=lidar360:=true'` records with the 360-degree LiDAR on
+  the mast as well (`togo_description/urdf/togo_macro.xacro`: an Ouster OS1-64 model, 1024 x 64 rays at 20 Hz,
+  on a 0.40 m mast at the centre of the sensor arch, its sensor 1.31 m above base_link against 0.31 m for the
+  front Seyond); its cloud is `/husky/sensors/ouster/points` next to the Seyond's, so one recording serves
+  both and a SLAM comparison between them sees the same drive. `--check-sensors` reports its rate too.
 - **What was tested.** The scripts are the ones that recorded the 2026-10-27 bags; they moved into the package
   the same day. Since the move, only their arguments and `--dry-run` were tested, not a new recording.
 

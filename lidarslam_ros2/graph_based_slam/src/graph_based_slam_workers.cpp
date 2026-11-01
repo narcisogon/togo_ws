@@ -175,6 +175,10 @@ void GraphBasedSlamComponent::publishMapAndPose()
         cached_modified_map_timed_msg_.header.stamp = stamp;
         modified_map_timed_pub_->publish(cached_modified_map_timed_msg_);
       }
+      if (texture_enabled_ && modified_map_colored_pub_ && !cached_modified_map_colored_msg_.data.empty()) {
+        cached_modified_map_colored_msg_.header.stamp = stamp;
+        modified_map_colored_pub_->publish(cached_modified_map_colored_msg_);
+      }
       publishMapToOdomTf(stamp);
       last_periodic_output_publish_time_ = std::chrono::steady_clock::now();
     }

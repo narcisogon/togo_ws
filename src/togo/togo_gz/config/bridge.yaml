@@ -108,6 +108,13 @@
   gz_type_name: "gz.msgs.PointCloudPacked"
   direction: GZ_TO_ROS
 
+# 360-degree LiDAR on the mast (xacro lidar360:=true; without it the sensor does not exist and nothing is relayed)
+- ros_topic_name: "/husky/sensors/ouster/points"
+  gz_topic_name: "/sensors/lidar360_0/scan/points"
+  ros_type_name: "sensor_msgs/msg/PointCloud2"
+  gz_type_name: "gz.msgs.PointCloudPacked"
+  direction: GZ_TO_ROS
+
 # Phidgets IMU
 - ros_topic_name: "/husky/sensors/imu_0/data_raw"
   gz_topic_name: "sensors/imu_0/data"
@@ -127,4 +134,30 @@
   gz_topic_name: "/sensors/ins_0/gps_1/fix"
   ros_type_name: "sensor_msgs/msg/NavSatFix"
   gz_type_name: "gz.msgs.NavSat"
+  direction: GZ_TO_ROS
+# Stereo VIO rig (togo_description/urdf/stereo_vio_rig.urdf.xacro): two mono cameras and their IMU
+- ros_topic_name: "/husky/sensors/stereo_rig/left/image_raw"
+  gz_topic_name: "/sensors/stereo_rig/left/image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+- ros_topic_name: "/husky/sensors/stereo_rig/left/camera_info"
+  gz_topic_name: "/sensors/stereo_rig/left/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+- ros_topic_name: "/husky/sensors/stereo_rig/right/image_raw"
+  gz_topic_name: "/sensors/stereo_rig/right/image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+- ros_topic_name: "/husky/sensors/stereo_rig/right/camera_info"
+  gz_topic_name: "/sensors/stereo_rig/right/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+- ros_topic_name: "/husky/sensors/stereo_rig/imu/data_raw"
+  gz_topic_name: "/sensors/stereo_rig/imu"
+  ros_type_name: "sensor_msgs/msg/Imu"
+  gz_type_name: "gz.msgs.IMU"
   direction: GZ_TO_ROS

@@ -463,6 +463,432 @@ registration or the map. Diagnostics 73 (filter-to-observer offset) and 74 (NIS 
   `__iekf_out_s03.yaml` stay).
 
 
+## Round 5 (from 2026-10-31): stereo visual-inertial odometry as a second measurement
+
+The user's plan (pasted 2026-10-31) in five phases: a simulated stereo rig, stock OpenVINS scored on the lap, the
+VIO as measurements in the output filter (`vio_out`), the VIO's per-scan delta in the registration's prior
+(`vio_prior`), a VIO edge and a re-seed path in the backend (`vio_edge`), then hardware. Decisions: every area of
+the tree may be edited for it (rover model, lidarslam_ros2, Docker image, this package); OpenVINS runs as a
+separate process (GPL-3, never linked; University of Delaware, USA. Nothing Chinese-origin may be used:
+VINS-Fusion is out); the work runs unattended through phase 4; DLIO keeps `imu_0`, the rig has its own IMU.
+
+**Phase 0, the rig (2026-10-31).** `togo_description/urdf/stereo_vio_rig.urdf.xacro`: two identical pinhole
+cameras (mono8, 640x480, 90 deg horizontal field of view, so f = 320 px, 20 fps, a little pixel noise) on one bar
+0.20 m apart, and a 400 Hz IMU at the bar's centre with MEMS-grade noise (densities: gyro 1.7e-4, accel 2.0e-3;
+bias walks 1.9e-5, 3.0e-3; per-sample sigmas computed in the xacro). Mounted in `togo_macro.xacro` on
+`base_link` at (0.45, 0, 0.50) m, level, looking forward: the sensor arch's camera mount sits 0.33 m behind the
+base origin and the enclosure would fill the bottom of the image. Extrinsics from the assembled model
+(`tools/urdf_frame_offset.py`, new): cameras in the rig IMU at (0, +-0.10, 0) with R_CtoI = [0 0 1; -1 0 0;
+0 -1 0]. Gazebo topics bridged by `togo_gz/config/bridge.yaml` (a plain `camera` sensor publishes its image on
+the sensor topic itself, the camera info under `/camera_info`), ROS names `/husky/sensors/stereo_rig/{left,
+right}/{image_raw,camera_info}` and `/husky/sensors/stereo_rig/imu/data_raw`; the recorder's topic list carries
+them. Note for the host simulation: `$(find togo_description)` resolves to the native workspace's symlink
+install of 2026-09-28, so a new file needs its symlink there (done for the rig; `bridge.yaml` is a symlink).
+Gate (`record_bag.sh --check-sensors`, `tools/bag_record/check_stereo_sync.py`): both cameras at 20.0 Hz by
+their stamps, 106 of 106 pairs with identical stamps, 640x480 mono8 in the optical frames, the rig IMU at
+500 Hz by stamps; the simulation's real-time factor drops to about 0.4 with the two cameras rendering (wall
+time only; bag time is unaffected). The images are dark (regolith at about 17 of 255 with the world's sun at
+intensity 1: the renderer applies no exposure), so recordings for the VIO use `--sun-intensity 6`, a copy of
+the world with a brighter sun (`tools/bag_record/world_sun.py`), the camera-exposure stand-in; LiDAR, IMUs and
+physics do not see the light. `--rtf` scales the recorder's wall-clock budgets.
+
+**Phase 1, OpenVINS (2026-10-31).** Built in the SLAM container at `~/slam_ws/src/open_vins` (not a mounted
+folder; `scripts/setup_openvins.sh` reproduces clone, Jazzy header patch and build; `libceres-dev` added to the
+Dockerfile), commit 69488123 of 2025-11-30; packages ov_core, ov_init, ov_msckf; the node
+`run_subscribe_msckf <estimator_config.yaml>`. Configs in `config/vio/` (estimator: gravity 1.62, stereo,
+calibration off, zero-velocity update on, a low drive-off threshold for the static initialisation, FAST 15,
+histogram equalisation; IMU chain with the rig's densities; camera chain with the rig's extrinsics and
+intrinsics). Plumbing: `seyond_dlio_slam.launch.py` arguments `vio` and `vio_config` (an `ov_msckf` node next
+to DLIO), `run_live_seyond_dlio_slam.sh` env `SLAM_VIO` / `SLAM_VIO_CONFIG`, `replay_slam_bag.sh --vio
+[--vio-config F]` (records `/ov_msckf/odomimu` and the feature clouds, `run_info vio=`), `benchmark_slam.sh`
+passes it through, and `slam_eval.py` scores the VIO as a `base_link` path with the same scorer (per leg too),
+reports feature counts per frame and leg, writes `vio_odometry.tum` and a `vio` block in `metrics.json`.
+
+- The bag (2026-10-31 17:25-17:51): `apollo16_stereo_20261031`, the benchmark route twice with the rig, 269 m in
+  675 s of simulation time (24 min of wall time at a real-time factor of 0.46), 5.6 GB; the cameras at 20 Hz, the
+  rig IMU at 500 Hz (Gazebo's IMU system samples at its own step), LiDAR and `imu_0` as before. Lap 1 trimmed with
+  `trim_bag.py --laps 1 --segments` into `apollo16_stereo_lap1_20261031` (351 s, the usual five legs). Missing
+  from it: the rig's camera info, because Gazebo derives a camera's info topic from the parent of its image
+  topic and both cameras shared one; fixed in the rig's xacro (image topics `.../left/image`) and the bridge for
+  the next recording. The VIO does not need it (intrinsics come from its yaml).
+- First OpenVINS replay (`vio_check1`, 17:52-18:05): the node died at start. OpenVINS reads its yaml with
+  OpenCV's FileStorage, which trips over a second colon on a line, including one inside a comment; the
+  comments of `config/vio/*.yaml` carry none now, and `use_mask: false` was added. Checked on the first minute
+  of the bag: static initialisation during the standstill, then tracking at about 150 Hz of processing rate.
+  The SLAM part of that replay ran with the default config (ATE 0.208 m, zig-zag 61 mm on the new bag).
+
+- Reference on the new bag (`ref_stereo`, 3 runs, 18:05-18:46, the default config): ATE 0.133 m, zig-zag 54 mm,
+  RPE 10 m 1.39 %, heading error 0.32 deg. A `vio_out` label (3 runs, 18:46-19:27) turned out to have run WITHOUT
+  OpenVINS: `benchmark_slam.sh` initialised its argument list after parsing `--vio` and dropped it (fixed). It is
+  therefore a second sample of the same config, a useful noise figure for 3-run labels on this bag: ATE 0.133
+  against 0.148, zig-zag 54 against 60 mm, heading error 0.32 against 0.36 deg, all "within noise" by the scorer.
+- The recording itself was flawed (19:40): under the image load the recorder stored messages up to 250 ms out of
+  order (`tools/bag_record/clock_order.py`: 243 backward steps of /clock, 4 of the LiDAR, 121 of the rig IMU; the
+  27 October bag has none), and their log times are the recording's wall clock at a real-time factor of 0.46.
+  Played back, /clock stepped backwards 170 times per run (tf2 cleared its buffer in the backend each time), DLIO
+  dropped a scan as non-increasing, and every replay crawled at the recording's pace (13 min per run). New tool
+  `tools/retime_bag.py`: every message's log time becomes its own stamp (simulation time) and the messages are
+  written in that order; `apollo16_stereo_lap1_20261031_rt` is the bag to use (0 backward steps, 347 s). The two
+  labels above are superseded by `ref_rt` and `vio_out_rt` on it.
+
+- On the retimed bag (`ref_rt`, 3 runs, 19:35-19:55, 6.5 min per run again): ATE 0.145 m, zig-zag 34 mm, RPE 10 m
+  1.40 %, heading error 0.47 deg, the same figures as the 27 October bag gives the default. The first `vio_out_rt`
+  label (19:55-20:15) had OpenVINS running through the whole lap (static initialisation in the standstill,
+  zero-velocity updates, state prints) but nothing reached DLIO, the recorder or the backend: ROS 2 topic names
+  are namespace-relative, and the launch gave the node a name but no namespace, so it published `/odomimu`
+  while everything listens on `/ov_msckf/odomimu`. One launch line (namespace `ov_msckf`) fixes it. That label
+  did show the cost of the extra process: all SLAM CPU 331 to 432 % and GICP solve time 6.5 to 9.1 ms (+39 %)
+  from contention, with the accuracy within noise (no VIO data in the filter). Re-run as `vio_out_rt2`.
+
+- `vio_out_rt2` (20:17, first run read): the VIO reached the filter at last, and OpenVINS itself had diverged
+  (ATE 11 km, speed 130 m/s, zero MSCKF features over the whole lap). Diagnosis (`vio_diag.py`): the rig's own IMU
+  in this bag reads a specific force of 1.36 m/s^2 at standstill instead of 1.62, with 0.34 m/s^2 on x: Gazebo's
+  dynamic-bias noise model gave it a bias no MEMS unit has, OpenVINS's static initialisation turned that bias
+  into a tilted gravity, the IMU prediction went wrong, and every feature update failed its chi-square test. The
+  images are fine throughout (mean 31-36 of 255). Fix without re-recording: OpenVINS runs on `imu_0` (ideal in
+  the simulation, 100 Hz, synchronised), with the cameras' extrinsics relative to it (p_CinI = (0.391, +-0.10,
+  0.3387)); every "VIO IMU in base_link" default moved to imu_0's place (DLIO `extrinsics/baselink2vio`, the
+  backend's `vio_rig_in_base_xyz`, the scorer's `--vio-imu-in-base`); the rig's xacro drops the dynamic bias for
+  the next recording. A quick replay of the first 85 s: clean initialisation (zero bias, a pure yaw), the
+  estimate moves. The filter's adapter also accepts a VIO message a few milliseconds ahead of its latest IMU
+  sample instead of skipping it (half of the rig-rate messages were skipped before). Labels `vio_out_rt3` and
+  `vio_edge` (Phase 4, below) follow in one chain after a rebuild.
+- Phase 4 code (20:10, built with the above): a second between-constraint on adjacent submaps in
+  `graph_based_slam` from the VIO's relative base_link pose between the two submaps' stamps (`use_vio_edge`,
+  `vio_edge_info_weight_trans/rot`, its own NIS auto-scale, `vio_input` remapped to `/ov_msckf/odomimu`), and
+  DLIO's `odom/gicp/recovery/reseedFromFilter`: a rejected registration restarts from the output filter's pose
+  (IMU + VIO) instead of the IMU prior. Variant `__vio_edge.yaml` = VIO in the filter + the edge + the re-seed.
+  The simulation never rejects a registration on this bag, so the re-seed is a no-regression check here.
+
+- `vio_out_rt3` / the imu_0 run (21:00-21:30): OpenVINS still blew its scale up on imu_0 (18 m/s mean speed, 45 m
+  from the start in 65 s against a 26 m path), so the detector, the stereo geometry (disparity 60/35/7 px near to
+  far, baseline right), the intrinsics, the timing (image stamps on IMU samples) and the gates were checked one by
+  one and were all fine; the state file (`save_total_state` through ROS parameters) showed the filter's roll/pitch
+  walking 7 deg away from the truth within 15 s of driving with a 0.22 m/s^2 accelerometer bias absorbing the
+  gravity leak, while the gyro integrated from the bag matched the truth to 0.3 deg over 90 s. Chained KLT flow
+  derotated by the gyro showed the images carrying about 15 % of the rover's yaw, and the pose publisher's link
+  poses in the bag settled it: **the rig, its IMU link and both camera links yawed up to 128 deg relative to
+  base_link; the rig kept a constant world heading (-89 to -97 deg) through every turn.** The rig's joints carried
+  `<preserveFixedJoint>` and the physics left those links free about z. Fix: all of them are plain fixed joints
+  now (sdformat lumps the rig into base_link, as imu_0 is; the SDF has only the four wheel joints), and the
+  recorder's gate turns the rover in place and checks the image shift against imu_0's yaw
+  (`check_stereo_sync.py --spin 0.3`: 1.20 on the fixed model, the rig IMU's yaw 1.00 of imu_0's; the broken model
+  would score about 0). The 2026-10-31 stereo bag is unusable for VIO (its `vio_out`/`vio_edge` numbers are void);
+  `apollo16_stereo2_20261031` (1 lap, sun 6) is being recorded on the fixed rover. OpenVINS moves to the rig's
+  own IMU (`config/vio/kalibr_imu_chain.yaml`, cameras at p_CinI = (0, +-0.10, 0); the imu_0 setup stays as
+  `estimator_config_imu0.yaml`), every "VIO IMU in base_link" default to (0.45, 0, 0.50), and the switch variants
+  are generated from the lunar config by `config/slam/make_variants.py` instead of being stale copies.
+- Phase 3 code (22:30, not yet built): the VIO's motion since the last scan as the registration's prior
+  (`odom/gicp/prior/vioMode`: 0 off, 1 translation only with the IMU integration's rotation, 2 full;
+  `odom/gicp/prior/vioMaxGapSec` 0.08 s of velocity extrapolation beyond the VIO's last message, otherwise the
+  IMU prior stays for that scan). DLIO keeps the VIO poses in its own history (under a separate lock, so the
+  prior-only use needs no filter), interpolates the rig IMU's pose at both scan stamps, moves the relative motion
+  into base_link with the rig extrinsics and applies it to the registered pose of the previous scan; the deskew
+  frames move with the prior so the placed points stay consistent with it. Counters in the VIO log line (prior
+  used / fallbacks / last delta against the IMU prior in mm). Variant `__vio_prior.yaml` = VIO in the filter +
+  translation prior. The label `vio_prior_s2` runs with `vio_out_s2` and `vio_edge_s2` against `ref_s2` on the
+  new bag.
+- New bag validated (22:22): `apollo16_stereo2_20261031` (one lap, 134 m, sun 6) -> `apollo16_stereo2_lap1_20261031`
+  (trimmed whole, `segments.json`) -> `apollo16_stereo2_lap1_20261031_rt` (simulation-time order, 0 backward
+  steps: **the stereo benchmark bag**). The rig IMU is clean (|a| 1.6185 at rest, 0.04 m/s^2 noise, no bias),
+  the cameras turn with the rover (chained flow derotated by the gyro leaves a few px over the 15 deg and 10 deg
+  turns), and OpenVINS on the first 85 s is sane on both IMU setups: speed within 0.05 m/s of the truth, position
+  error 0.2-1.6 m after 65 s of driving, tilt within about 2 deg (the rig IMU, `estimator_config.yaml`, is the
+  default; `estimator_config_imu0.yaml` the imu_0 variant). Open tuning item for later: 3 of 4 MSCKF features
+  fail triangulation (far regolith with a 0.2 m baseline), 0.7-1.2 px residuals on the ones used. Labels running
+  (`chain21`): `ref_s2` (3 runs), `vio_out_s2`, `vio_prior_s2`, `vio_edge_s2` (3 runs each, `--vio`) on the
+  `_rt` bag.
+- `ref_s2` / `vio_out_s2` (23:11): the reference on the new bag scores ATE 0.139 m, zig-zag 34 mm, RPE 10 m
+  1.45 % (three runs). `vio_out_s2` is WORSE (ATE +67 %, zig-zag +183 %) because OpenVINS, fine for the first
+  two legs, loses every feature at the slope waypoint (sim 165-175 s: the rover crests, pitches 15 deg in 5 s,
+  nearly stops and turns in place while the level cameras see three quarters sky) and never recovers: zero
+  SLAM and MSCKF features for the remaining 180 s, IMU-only propagation, 4-6 m/s and an ATE of 250-470 m over
+  the lap. The images are not the problem (5,000-10,000 FAST corners in every frame of the lap, mean 23-39 of
+  255). The filter's soft gate only inflated R, so the diverged VIO still leaked in.
+  Two consequences, both built 2026-10-31 evening: (1) **the rig's cameras pitch down 20 deg**
+  (`camera_pitch` in the rig xacro; the ground stays in view over a crest and the lever arm gives parallax in
+  turns in place; `config/vio/kalibr_imucam_chain.yaml` carries R_CtoI = [0 -s c; -1 0 0; 0 -c -s]) and a
+  third stereo recording follows; (2) **plausibility guards** so a diverged VIO cannot hurt the SLAM: DLIO
+  skips VIO messages faster than `odom/iekf/vio/maxSpeed` (2 m/s) and suspends the updates after
+  `odom/iekf/vio/maxGatedStreak` (50) consecutive gated innovations until one passes, the VIO prior falls back
+  to the IMU's when the implied speed is implausible, and the backend adds no VIO edge above
+  `vio_edge_max_speed_mps` (2 m/s). The `*_s2` labels of the VIO switches are therefore void as measurements
+  of the switches; they stand as the record of the failure.
+- `vio_prior_s2` / `vio_edge_s2` (23:53, same diverged VIO, no guards yet): the VIO prior took the registration
+  off the map (ATE 92 m, the prior replaced the IMU's 5,760 times with a 3 m delta at the end) and the VIO
+  edges cost ATE +91 %. Both are exactly what the plausibility guards now refuse (a prior or an edge implying
+  more than 2 m/s falls back / is skipped). The OpenVINS process costs +150 to +200 % CPU on this machine
+  (all SLAM processes 348 -> 497-554 %): the price of the separate process, to be weighed once it helps.
+  `chain22` (from 23:55): build with the guards and the prior, OpenVINS at DEBUG stage counts, the sensor gate
+  with the pitched cameras, `apollo16_stereo3_20261031` recorded, trimmed, retimed, OpenVINS validated over the
+  whole lap, then `ref_s3` and (if the VIO held the lap) `vio_out_s3`, `vio_prior_s3`, `vio_edge_s3`.
+- `apollo16_stereo3_20261031` (2026-11-01 00:20, pitched cameras, guards built): the gate passes (spin ratio
+  1.38; a camera looking down sees nearer ground in the band and the rig's lever arm adds flow, so the window is
+  0.6-1.6 now), `ref_s3` scores like `ref_s2`, but OpenVINS diverges EARLIER with the pitched cameras: right
+  after the first fast turn on the spot (0.56 rad/s at sim 82-88 s) its MSCKF chi-square ratios jump to 300,
+  the speed doubles by 90 s and the lap ends 1.4 km off. What was checked and cleared: the camera-to-IMU time
+  offset is 0 ms (image flow against the gyro over the whole lap, correlation 0.993; online calibration finds
+  +2 ms); the simulated IMU includes its lever arm (the two IMUs on the body differ by the centripetal term as
+  physics requires); the rover's own shadow is not in view during that turn, and a per-frame dark-region mask
+  (`scripts/openvins_patch_dark_mask.py`, node parameters `dark_mask_threshold` / `dark_mask_dilate_px`, kept
+  but off by default) made things worse because masking the sky also removes the horizon features that anchor
+  the orientation. What the tracker's own picture shows: after the global histogram equalisation the near
+  regolith is salt-and-pepper noise, on which KLT and the stereo match are fragile, while the far features
+  are stable. A front-end sweep on the first 110 s (no equalisation, CLAHE, half-resolution images, both, a
+  stricter detector, a longer clone window) is the next step; the labels run once a setting holds the lap.
+- Front-end sweep (01:33, first 110 s of the pitched-camera bag, position error at the end): global histogram
+  equalisation (the stock setting) 14.6 m; **no equalisation 0.8 m; CLAHE 0.2 m**; half-resolution images
+  1.4 m; no equalisation + half resolution 0.6 m; a stricter detector or a longer clone window with the global
+  equalisation still 23 m / 6.2 m. So the culprit was the global equalisation amplifying the regolith's noise
+  into false corners and bad stereo matches, which the first fast turn then turned into a filter divergence.
+  `config/vio/estimator_config.yaml` now uses CLAHE (`chain24`: the full lap, then `vio_out_s3`, `vio_prior_s3`,
+  `vio_edge_s3` against `ref_s3`).
+- CLAHE over the whole lap (01:40): the VIO holds the first two legs and the climb (0.2-2 m of error up to
+  135 s of driving) and dies at the slope waypoint, where the rover turns 150 deg on the spot at up to 0.9 rad/s
+  with the speed at 0.06 m/s and only 0-2 SLAM features left after the climb (17 px of image motion per frame
+  for the fixed 15 px KLT window). Nothing recovers it afterwards: stock OpenVINS never re-initialises. The
+  labels `vio_out_s3`, `vio_prior_s3`, `vio_edge_s3` run anyway (01:45): with the guards, a VIO that is right for
+  150 s and then refused is a fair measurement of the switches on the first two legs.
+- Restart on divergence, coded 02:00 (built and tested after the labels): the OpenVINS node exits when its speed
+  stays above `vio_diverge_velocity_mps` (3 m/s) for a second (`scripts/openvins_patch_diverge_exit.py`), the
+  launch respawns it, and it initialises again (statically at a standstill, dynamically while driving with
+  `init_dyn_use`). DLIO and the backend treat a VIO pose jump above 0.5 m (or a stamp going backwards) as a new
+  frame (`odom/iekf/vio/frameJumpM`, `vio_edge_frame_jump_m`): history and buffer cleared, nothing spans the
+  restart. The dark-region mask stays available but off.
+- **Phases 2-4 measured** (`vio_out_s3`, `vio_prior_s3`, `vio_edge_s3`, three runs each against `ref_s3`, the
+  CLAHE front end, the VIO right for the first two legs and the climb, refused by the guards after the crest):
+
+  | label | ATE | zig-zag | RPE 1 m | RPE 10 m | pitch | plain -> start leg | CPU |
+  |---|---|---|---|---|---|---|---|
+  | `ref_s3` | 0.129 m | 31 mm | 0.090 m | 1.23 % | 0.063 deg | 0.190 m | 343 % |
+  | `vio_out_s3` (filter) | +26 % | +35 % | +29 % | +28 % | +70 % | -8 % | +42 % |
+  | `vio_prior_s3` (prior) | +306 % | +32 % | +57 % | +157 % | +87 % | +111 % | +36 % |
+  | `vio_edge_s3` (backend) | +5 % | +15 % | +20 % | +16 % | +104 % | -21 % | +32 % |
+
+  None of the three improves the SLAM on this bag. The LiDAR registration against the 1 cm terrain with the
+  ideal IMU is far more accurate than the stereo VIO (0.2-2 m over 135 s, velocity noise of centimetres per
+  second), so feeding the VIO's velocity into the output filter adds jitter and pitch error, the VIO prior is
+  worse than the IMU's and takes the registration with it (even below the 2 m/s guard), and the backend edge is
+  neutral overall with a hint on the LiDAR's hardest leg (plain -> start, -21 %, within the spread). The guards
+  worked (44,792 implausible and 17,182 suspended messages refused in `vio_prior_s3`; 0 implausible in the two
+  others). The separate OpenVINS process costs +32-42 % CPU and +47-78 % GICP solve time from contention. By
+  the guard all three switches stay off; the plumbing, the guards and the scorer's VIO block remain for the
+  hardware phase, where the LiDAR will not have an ideal IMU and a 1 cm terrain.
+- Restart on divergence tested (03:16, one replay with `--vio` on the `vio_out` variant): OpenVINS reported
+  "estimate diverged (3.2 m/s for 1.1 s at 187.5): exiting for a respawn", the launch respawned it, DLIO logged
+  4 VIO frame resets and the VIO's own path stayed within 4.7 m instead of flying off by hundreds of metres.
+  OpenVINS's dynamic initialisation (starting while driving) is not usable with its stock settings on this
+  rover (a probe starting the bag at 200 s initialised with a 15 deg attitude uncertainty and ran away at
+  once), so `init_dyn_use` stays off and a respawned node initialises again at the next standstill. The
+  respawn costs CPU while the node keeps trying to initialise (676 % all SLAM in that run). The fixed KLT
+  window of OpenVINS (15 px, 5 levels) against the crest turn's 17 px per frame is the remaining lead if the
+  VIO is ever to hold that waypoint.
+- Textured map (03:40-04:10, built on request): the backend colours each keyframe from the left image nearest
+  its stamp (depth-buffered projection, TF extrinsics), keeps the gray per keyframe point, and publishes a
+  voxelised coloured map (`/modified_map_colored`, x y z rgb intensity time) next to the timed map, plus
+  `map_colored.pcd` on save. No factor is added and the frontend is untouched. Switches: launch `texture_map`,
+  `hazard` (false = pose graph and maps only); replay `--texture`, `--no-hazard`; `tools/colored_map_view.py`
+  for a picture. Measured on the third stereo bag (one lap, `--texture --no-rviz`): 392 keyframes coloured,
+  none without an image within 30 ms, about 78 % of each keyframe's points painted (the rest outside the
+  camera's view or occluded), 581 k voxels at 10 cm, `map_colored.pcd` 5.8 MB; the top view shows the crater
+  rims lit and the interiors shaded as the low sun does it. Cost against `ref_s3`: all SLAM processes 356 %
+  against 343 % CPU, hazard update 119 against 120 ms, RAM +0.3 GB (the coloured voxels and the cached
+  message), ATE within the reference spread. The frontend's numbers are unchanged. With RViz drawing the big
+  clouds the same run reads 665 %, which is RViz, not the backend.
+
+## Round 6 (from 2026-11-01 05:00): lossless CPU cuts
+
+Principle: only the estimate runs at sensor rate; every map product runs on its own cadence, incrementally, and
+never does work proportional to the whole map per update. Nothing here changes what DLIO or the graph computes,
+so the accuracy labels must stay within the reference spread.
+
+**Where the 343 % went** (reference on the third bag, per process from the resource samples, per thread from a
+profiling replay): backend 212 %, DLIO 99 %, DLIO's map node 16 %, the RViz path helper 11 %. In the backend:
+the DEM recorder re-rasterised the whole corrected map (5 M points) every 5 s, each pass 14 s, most of it nine
+ASCII rasters of 1.8 M cells through iostream formatting (about one core); the hazard mapper at 120-150 ms per
+update, saturated, keeping one scan in three (0.7 core); the timed map serialised on every submap (17 MB). In
+DLIO only 13 ms per scan is the registration pipeline; the rest is spread over twenty OpenMP worker threads at
+3 % each, the signature of libgomp spinning between the short parallel regions at 20 Hz.
+
+**Switches built (05:10):** the DEM is incremental (jobs carry only the points appended to the assembled map,
+a full restart when the map was rebuilt, per-cell statistics recomputed for touched cells, rasters written
+every `dem/write_period_sec` = 60 s and on every save, a `to_chars` writer); `hazard/input_rate_hz` = 5 (a
+designed intake rate instead of an overflowing queue; skipped scans are not drops); the timed and coloured
+maps serialised at most every `modified_map_timed_min_interval_sec` = 5 s (the heartbeat republishes the
+cached message); and `gomp_spincount` (launch; replay `--omp-passive`) for passive OpenMP waiting in the
+three SLAM nodes. Labels: `cpu6` (the first three, as the new defaults) and `cpu6_omp` (plus passive OpenMP)
+against `ref_s3`.
+**`cpu6` (05:55, three runs against `ref_s3`):**
+
+| | `ref_s3` | `cpu6` | `cpu6_omp` |
+|---|---|---|---|
+| all SLAM processes, CPU | 343 % | 197 % (-42 %) | 187 % (-46 %) |
+| RAM peak | 2.2 GB | 1.9 GB | 1.9 GB |
+| hazard update, dropped scans | 117 ms, 4276 | 93 ms, 0 | 91 ms, 0 |
+| GICP solve, mean | 7.3 ms | 5.8 ms | 6.4 ms |
+| ATE | 0.129 ± 0.018 m | 0.139 ± 0.025 m | 0.146 ± 0.017 m |
+| zig-zag | 31 mm | 32 mm | 34 mm |
+| heading error | 0.339 ± 0.085 deg | 0.332 ± 0.035 deg | 0.384 ± 0.268 deg |
+
+`cpu6` is adopted as the default: every accuracy metric within the reference spread, 42 % less CPU, the
+hazard mapper no longer saturated (0 drops instead of two scans in three), the DEM passes 40-115 ms instead
+of 14 s, and the registration itself faster from the lower contention. Passive OpenMP waiting (`cpu6_omp`)
+takes another 10 points but every accuracy metric drifts a little worse with wider spreads (the parallel
+regions pay a wake-up latency, GICP 6.4 against 5.8 ms), so it stays a switch, off. The DEM's exactness is
+proven by `test_dem_raster` (the accumulator fed in chunks against an independent one-shot rasteriser, cell
+for cell; the primitives live in `dem_raster.hpp`), since the saved `map.pcd` is a downsampled copy and
+cannot reproduce the DEM's input. Next label `cpu6b`: the deskewed cloud published on every second scan
+(`pointcloud/publishEveryNth` 2; the backend takes one scan per keyframe, the hazard mapper its 5 Hz, the
+map node the keyframe stream) and the RViz path helper only with RViz.
+
+**`cpu6b` (06:23, three runs against `ref_s3`):** CPU 186 % (-46 %), RAM 1.86 GB (-16 %), GICP 6.0 ms, hazard
+92 ms and 0 dropped; ATE 0.149 ± 0.016 m, RPE 1.40 %, zig-zag 33 mm, heading 0.323 deg, every accuracy verdict
+`~`. Adopted. The DLIO deskewed cloud now goes out on every second scan (`pointcloud/publishEveryNth` 2): the
+backend builds each submap from the single latest cloud once the odometry has moved its threshold, the hazard
+mapper takes 5 Hz of the stream and the frontend map node is not needed, so no product loses a point; the RViz
+path helper runs only with RViz. Two facts about the benchmark itself, from the nine reference / cpu6 / cpu6b
+runs: the backend's map-to-odom correction is identity on this lap (no loop closure fires), so the scored
+trajectory is DLIO's own and nothing the backend consumes can move the ATE; and that ATE scatters from 0.114 to
+0.166 m run to run (the frontend is not deterministic under replay timing), so three runs resolve differences
+of about 0.03 m and the monotone-looking 0.129 / 0.139 / 0.149 means of the three labels are inside that noise.
+
+**`cpu6c` (06:47, three runs against `ref_s3`):** all SLAM processes 148 % (-57 %), RAM 1.69 GB (-24 %), the
+backend 63 % (was 213 %), hazard updates 59 ms mean with none dropped, GICP 5.3 ms, DLIO 43 ms CPU per scan;
+the hazard grid grew 40 times in the lap instead of 383 and re-inflated the whole grid once (the first
+update) instead of 380 times; 47 gtests pass. Every accuracy verdict is `~` again, but the along-track RMSE
+has crept over the labels (0.088, 0.092, 0.104, 0.113 m from `ref_s3` to `cpu6c`) while every registration
+statistic (iterations, fitness, overlap, Hessian, scans processed) is identical, so a bisect runs before the
+defaults are locked: the current defaults with every deskewed scan published (variant `every_scan`, label
+`cpu6c_n1`) against three more runs of the defaults (six runs of `cpu6c`). Two more lossless cuts went in: The hazard mapper's grid grew on 383 of the 904 updates of a
+cpu6 lap and each growth re-inflated the whole grid (124 ms against 69 ms for a windowed update, 57 % of the
+mapper's 83 s); the cells a growth adds are unknown and, by the observation padding (slope radius on top of the
+inflation radii), beyond the reach of every hazard, so growth now copies the grid and inflates nothing, and
+`hazard/grow_margin_m` (2 m) grows the grid ahead of the observation so the copy is paid once per 2 m of travel
+(two gtests: costs cell for cell against the full distance transform after growth, the margin's extent). And
+`dlio_map_node`, the frontend map accumulator, is off by default (`frontend_map`, `--frontend-map`): nothing in
+the stack reads `/dlio/map`, the backend builds the corrected maps, and it cost 15 % of a core plus memory that
+grows with the map. A resource budget (`tools/slam_budget.py`, `config/slam/slam_budget.json`) now checks every
+scored run against limits well above the measured defaults, so a regression trips it without a comparison.
+
+**Where DLIO's core goes (sudo-gdb stack samples of the `cpu6c` defaults, 06:50):** of 280 busy thread
+samples, 245 sit inside `libgomp` itself below `start_thread`, i.e. OpenMP workers spinning between parallel
+regions (one five-worker pool per executor thread that ever ran a region, four pools), and only about 35 are
+work (nanoflann searches, covariances, the cloud conversion). Yet the passive-waiting label `cpu6_omp` left
+DLIO at the same 94.6 % while the backend lost 9 points, so a passive-waiting profile with the same samplers
+follows the bisect to see whether those spinning samples disappear, before any intermediate spin budget is
+tried as a switch.
+
+**Bisect (11:37):** the defaults with every deskewed scan published (`cpu6c_n1`, three runs) scored ATE 0.150
+± 0.071 m (0.231, 0.102, 0.117) against 0.145 ± 0.018 m for five runs of the defaults with every second scan,
+along-track 0.105 against 0.104 m, every verdict `~`: the publish rate changes nothing measurable. The scatter
+is the frontend's own (the two best runs of the day and the worst sit in the same three-run label; the IMU
+calibration DLIO logs is bit-identical in all 17 runs, so the start is not the source; the error profile along
+the lap shifts as a whole, which is what a heading drift looks like once the global 4-DoF alignment has absorbed
+it). Decision: `pointcloud/publishEveryNth` goes back to 1 by default. It bought about one CPU point, nothing
+measurable otherwise, and it is the one round-6 change that touches the frontend's timing at all; a switch
+with no measured gain is not worth any doubt. Everything else of `cpu6c` stays. Two findings about the bench
+itself: a `cpu6c` run that spanned a four-hour system sleep (07:23-11:30) was quarantined under
+`slam_runs/_invalid/` before any comparison used it, and three `odom_to_path.py` helpers from runs at 23:37,
+00:32 and 00:52 the night before were found still spinning at 10 % of a core each: they answered SIGINT only,
+so they outlived launches that were killed harder; the helper now exits on SIGTERM too and the three were
+stopped by PID. They ran through every label of the day, the reference included.
+
+**Confirmation (12:31):** label `round6` (the defaults as they now stand, four runs) and `ref_load`
+(variant `ref_load`: the pre-round-6 cadences and bounds, `--frontend-map`, three runs), both against
+`ref_s3`. `ref_load` carries the old load on the new code, so it separates "the lighter load changed the
+frontend's scatter" from "the reference was measured at a different time of day".
+
+**The spinning hypothesis is wrong (passive profile, 11:46).** With `GOMP_SPINCOUNT=0` the same gdb samples
+still show 263 of 278 busy DLIO thread samples "inside libgomp", and the per-thread CPU sampler (which
+measures real ticks) gives the twenty workers 2.3-2.4 % each against about 3 % when they may spin; DLIO as a
+whole stays at 86 % and 44 ms of CPU per scan. The explanation: libgomp issues its futex waits through an
+inline `syscall` instruction, so a worker asleep in a futex shows its program counter inside the stripped
+`libgomp.so.1`, not in libc, and the stack summary counted sleepers as busy. The workers' real time is real
+work: the nearest-neighbour searches of the registration (source covariances once per scan, correspondences
+on every iteration), spread over four worker pools because the LiDAR callback lands on any of the four
+executor threads. Passive waiting therefore saves nothing in DLIO and costs the backend's fit threads a
+wake-up on every update; it stays a switch, off. DLIO's remaining 85 % of a core is the registration itself
+plus the IMU-rate propagation and the 100 Hz pose publisher, and none of that can go without touching the
+estimate: the frontend is done for this round.
+
+**Noted for later (not this round):** DLIO's memory grows about 80 MB per minute of driving: it keeps every
+keyframe's cloud and its per-point GICP covariances (about 2.5 MB per keyframe) so that a keyframe re-entering
+the submap costs nothing. Dropping the covariances of keyframes far from the rover and recomputing them on
+re-entry would bound the memory of a long mission at a CPU cost only when ground is revisited; that is a
+trade, not a lossless cut, so it is parked here.
+
+### Round 6 result (2026-11-01 12:31)
+
+| | `ref_s3` (00:28, 3 runs) | `ref_load` (12:11, 3 runs) | `round6` (11:46, 4 + 4 runs) |
+|---|---|---|---|
+| all SLAM processes, CPU | 343 % | 306 % | **146 %** |
+| graph backend CPU | 213 % | 194 % | 62.5 % |
+| RAM peak | 2.22 GB | 1.84 GB | **1.66 GB** |
+| hazard update mean / p95, dropped | 117 ms, 4276 | 110 ms, 4064 | **58 / 103 ms, 0** |
+| GICP solve, mean | 7.29 ms | 6.23 ms | 4.90 ms |
+| DLIO CPU per scan | 51.5 ms | - | 42.3 ms |
+| ATE | 0.129 ± 0.018 m | 0.161 ± 0.012 m | 0.149 ± 0.022 m (8 laps) |
+| along / cross-track | 0.088 / 0.092 m | 0.102 / 0.123 m | 0.109 / 0.113 m |
+| heading error | 0.339 ± 0.085 deg | 0.496 ± 0.127 deg | 0.411 ± 0.047 deg |
+| zig-zag | 31 mm | 33 mm | 32 mm |
+| RPE 10 m | 1.23 % | 1.38 % | 1.39 % |
+
+`round6` is the default and the reference for the next rounds; every accuracy verdict against `ref_s3` is
+`~`, every resource verdict `better`, and every run is within the budget. `ref_load` settles the question the
+along-track creep raised: on the same binaries, the pre-round-6 cadences and bounds with the map node on (306 %)
+score exactly like the new defaults (0.161 against 0.159 m, 0.496 against 0.411 deg, all `~`), so nothing
+round 6 changed moves the estimate. What remains is that both score about 0.03 m worse than the reference
+measured at 00:28, and so did the round-5 label `vio_edge_s3` at 01:23 (0.135 m): all six night runs sit at
+0.11-0.15 m and all twenty day runs at 0.10-0.23 m with a mean near 0.16. The two explanations left are the
+build (the reference ran on binaries from before the VIO guards of round 5 went into DLIO, code that is inert
+with the VIO off; the backend cannot move the scored path at all) and the machine's state by time of day (the
+replay is wall-clock timed; registration statistics are identical in every run). The decisive check costs no
+code: `benchmark_slam.sh --label round6_night --repeats 3 --compare-to round6` run at night; if it comes back
+at 0.13 m the benchmark needs a time-of-day control, if at 0.16 m the shift is the round-5 build and the
+reference is simply `round6` from now on. Either way the frontend is untouched by this round.
+
+**What changed in DLIO since the round-4 commit (read 2026-11-01 13:30).** The uncommitted DLIO diff (420
+lines) is the round-5 VIO plumbing plus the publish switch: additions, and three substitutions. Deskew and
+preprocessing multiply by a VIO prior delta that is identity whenever `odom/gicp/prior/vioMode` is 0; the output
+filter's apply step moved verbatim into `applyFilterCorrection` so the VIO updates share it (the only visible
+difference, which history entries get the correction when no scan-time reference is found, resolves to the
+same empty set); the re-seed of a rejected registration is gated on the VIO being enabled. New parameters,
+counters and two diagnostic indices (75, 76) complete the diff. With the VIO off the frontend's behaviour is,
+by reading, the round-4 one. Because reading is not proof, the live script gained `SLAM_OVERLAY_SETUP`
+(replay `--overlay-setup PATH`): a ROS overlay sourced after the SLAM workspace, so a package built elsewhere
+replaces the workspace's one for a run. The committed DLIO was built in `~/slam_ws_r4` inside the container
+(from `git archive HEAD`, exported under `slam_output/dlio_r4_src/`) and replayed for three laps as label
+`dlio_r4` under the current launch, config and backend; the result is appended below.
+
+**A/B, first pass (13:17):** `dlio_r4` (three laps, 151 % CPU, the same load as the defaults) scored ATE
+0.131 ± 0.043 m (0.180, 0.100, 0.114), along-track 0.089 m, heading 0.328 deg: the night-time reference's
+numbers (0.129 / 0.088 / 0.339), against 0.159 / 0.109 / 0.411 for the current DLIO (`round6`, four laps). The
+registration statistics are the same (4.84 against 4.92 iterations, 5.1 against 4.9 ms). That takes the
+machine's time of day off the table: the committed frontend reproduces the reference today, the current one
+does not. Three against four laps with spreads of 0.04 and 0.02 m is not yet a verdict (`~`), so an
+interleaved A/B follows: four more laps of each, alternating, with a Welch t-test over all runs of both labels.
+If the gap holds, the three substitutions of the diff get bisected by rebuilding the current source with each
+one restored; if it closes, the frontend is cleared and the scatter is the explanation.
+
+**A/B, interleaved (14:09): the gap closes.** Four more laps of each binary, alternating: `dlio_r4` 0.157,
+0.162, 0.135, 0.183 m and `round6` 0.164, 0.108, 0.131, 0.155 m. Over everything, the committed DLIO scores
+0.147 ± 0.032 m (7 laps) and the current one 0.149 ± 0.022 m (8 laps), along-track 0.103 against 0.106 m,
+heading 0.353 against 0.389 deg, Welch t = 0.13; against all ten laps ever run with round-4 frontend code
+(mean 0.142 m) the current defaults give t = 0.62. The frontend is cleared, as the reading said. The three
+reference laps of 00:28 (0.123, 0.149, 0.114 m) were a low draw from a scatter whose per-lap standard
+deviation is about 0.03 m: nothing in round 5 or round 6 moved the estimate. Consequences: `round6` with its
+eight laps (0.149 ± 0.022 m) is the reference from here on; and for decisions about ATE on this bag three
+laps resolve differences of roughly 0.05 m only, so a claimed ATE change below that needs six to eight laps,
+while zig-zag, RPE, GICP time and the resource metrics stay decisive with three. The night re-run suggested
+above is no longer needed. The bisect variant `all3` (prepared, not built) is moot.
+
+Open for later rounds: DLIO's memory growth (per-keyframe covariances), a time-of-day control in the
+benchmark if the night run says so, and the hazard mapper's remaining 58 ms per update (the plane refit of
+about 21 000 cells per update, already parallel and exact; the next lossless step would skip refits whose
+neighbourhood heights did not change beyond the fusion noise, which needs its own exactness argument).
+
+Results are appended as the phases land.
+
 ## Goal
 
 Make the SLAM pipeline use less CPU and memory without losing accuracy or reliability. The pipeline is the DLIO
@@ -688,3 +1114,57 @@ The expected gains are estimates from the earlier code analysis; the benchmark d
 
 Suggested order: Step 1 (items 1-3), then Step 4.1 as a quick side run, then Step 2, Step 3, Step 4.2-4.4. Re-rank
 after Step 1, since the CPU split will change.
+
+## LiDAR on a mast: a 360-degree sensor from a higher point (2026-11-01, on the user's ask)
+
+**Question.** Does a 360-degree LiDAR mounted high do better than the front-looking Seyond (120 x 70 deg,
+0.31 m above base_link) on the lap?
+
+**Setup.** The rover model gained an optional mast at the centre of the sensor arch's top with an Ouster OS1-64
+model on it (clearpath_sensors_description's macro: 1024 x 64 rays, 360 x 42.4 deg, 20 Hz, 0.3-150 m, no noise
+like the Seyond's model): `xacro lidar360:=true lidar360_mast:=0.40`, sensor frame `lidar360_0_sensor_link` at
+(-0.403, 0, 1.314) in base_link, i.e. 1.0 m above the Seyond and 0.4 m behind the base origin; bridged to
+`/husky/sensors/ouster/points`. Both LiDARs run in one recording of the benchmark route (`record_bag.sh
+--sim-args extra_xacro_args:=lidar360:=true`, with the stereo rig and the IMUs as in the stereo bag, real-time
+factor about 0.3), so the two SLAM runs see the same drive. The SLAM side: replay `--lidar-topic
+/husky/sensors/ouster/points --scan-period 0.05` with the variant `lidar360` (extrinsics, hazard ray-origin
+frame, crop box 1.5 m because the rover's body is in a 360-degree view; everything else as `round6`). Deskew
+with synthetic per-point timing stays on for both, as the benchmark runs it; note that a simulated scan is an
+instantaneous snapshot, so that timing is an approximation for either sensor (something to measure on its
+own some day: a `dlio_deskew:=false` label). Six laps per sensor, interleaved, on the mast bag; the Seyond laps
+of that bag are also the control against the stereo bag's `round6`.
+
+Geometry worth knowing before the numbers: the OS1's lowest ring (-21.2 deg) from 1.31 m above base_link
+reaches the ground about 3.5 m from the mast, where the Seyond's -35 deg from 0.31 m reaches it at 0.5 m in
+front; the mast sensor sees all around and far, the Seyond sees the ground right ahead. The hazard mapper gets
+the near ground from the map's memory in the mast case.
+
+**Result (16:31, six laps per sensor, interleaved, on the mast bag `apollo16_lidar360_lap1_20261101_rt`):**
+
+| | Seyond, front, 0.31 m (`seyond_mb`) | OS1 on the mast, 1.31 m (`lidar360`) |
+|---|---|---|
+| ATE | 0.150 ± 0.024 m | **0.066 ± 0.006 m** (-56 %) |
+| along / cross-track | 0.110 / 0.097 m | 0.044 / 0.045 m |
+| heading error | 0.431 ± 0.161 deg | 0.093 ± 0.006 deg (-79 %) |
+| RPE 10 m | 1.31 % | 0.54 % |
+| zig-zag | 31 mm | 17 mm |
+| ATE per leg: to rocks / rocks to slope / slope to plain / plain to start | 0.125 / 0.125 / 0.151 / 0.188 m | 0.055 / 0.037 / 0.044 / 0.060 m |
+| height scale (vertical drift per metre climbed) | 2.0 % | -0.1 % |
+| GICP fitness / overlap / iterations | 2.24 / 0.984 / 4.98 | 1.52 / 0.995 / 3.25 |
+| GICP solve, DLIO CPU per scan | 5.0 ms, 43 ms | 22.7 ms, 217 ms |
+| scans processed | 6864 | 5610 (18 % skipped: the frontend cannot keep 20 Hz at this load) |
+| all SLAM CPU / RAM peak | 148 %, 1.6 GB | 578 %, 4.6 GB (DLIO +360 MB/min) |
+| hazard update, dropped | 59 ms, 0 | 308 ms, 222 |
+
+Every accuracy verdict is `better` and the mast sensor's lap-to-lap spread is a tenth of the Seyond's; the
+Seyond on this bag scores exactly like `round6` on the stereo bag (0.150 against 0.149 m), so the route and
+the recording are consistent and the gain is the sensor's. The gain is largest where the forward sensor has
+least to see: the slope and the featureless plain (-71 %, -68 %), and the height scale error of the forward
+sensor (2 % of the climb, the long-standing finding) vanishes with the all-round view. The registration itself
+is healthier (fitness 1.5 against 2.2, overlap 0.995, three iterations instead of five).
+
+The price at the untouched settings is a stack that does not fit the rover: a full circle to 150 m voxelised
+at 0.15 m gives the registration four to five times the points, the frontend skips a fifth of the scans, the
+hazard mapper saturates with whole-circle scans at 5 Hz, and DLIO's per-keyframe covariances grow its memory
+five times faster. So the next label measures the same sensor at a compute budget near the Seyond's:
+`lidar360_lean` (registration voxel 0.30 m, hazard mapper 2.5 Hz), six laps; appended below.

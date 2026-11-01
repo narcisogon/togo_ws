@@ -23,6 +23,15 @@ NAME=""
 LABEL=""
 RATE=1.0
 DURATION=""
+VIO=0
+TEXTURE=0        # --texture: the backend colours the keyframes from the left camera
+HAZARD=1         # --no-hazard: backend without the hazard mapper (map only)
+OMP_PASSIVE=0    # --omp-passive: OpenMP workers sleep between regions (GOMP_SPINCOUNT=0) instead of spinning
+FRONTEND_MAP=0   # --frontend-map: run dlio_map_node too (the frontend map /dlio/map; nothing in the stack reads it)
+OVERLAY_SETUP="" # --overlay-setup PATH: a ROS overlay (container path) sourced after the SLAM workspace: A/B of builds
+LIDAR_TOPIC=""   # --lidar-topic T: the point cloud DLIO registers (default: run_live's, the Seyond)
+SCAN_PERIOD=""   # --scan-period S: the scan period (s) of DLIO's synthetic per-point timing (default: run_live's)
+VIO_CONFIG=""                         # default: ${PKG}/config/vio/estimator_config.yaml
 RVIZ=true
 RECORD=1
 EVAL=1
@@ -52,6 +61,21 @@ Options:
   --label LABEL        group label for tools/slam_compare.py (default: the run name)
   --rate R             playback rate (default ${RATE})
   --duration S         play only the first S seconds of the bag
+  --vio                also run OpenVINS (ov_msckf) on the bag's stereo rig, in the container next to SLAM;
+                       its /ov_msckf/odomimu and feature clouds are recorded and scored (metrics.json: "vio")
+  --vio-config FILE    OpenVINS estimator_config.yaml (default: config/vio/estimator_config.yaml of this package)
+  --texture            the backend colours every keyframe from the stereo rig's left camera and publishes
+                       /modified_map_colored; map_colored.pcd is saved into the run's SLAM output before the stop
+  --no-hazard          backend without the hazard mapper: pose graph and maps only
+  --omp-passive        OpenMP workers of the SLAM nodes sleep between parallel regions instead of spinning
+  --frontend-map       also run dlio_map_node, the frontend map accumulator (/dlio/map); off by default since
+                       nothing in the stack reads it (the backend builds the corrected maps)
+  --overlay-setup PATH a ROS overlay setup.bash (container path) sourced after the SLAM workspace, so a package
+                       built elsewhere replaces the workspace's one for this run (A/B of builds)
+  --lidar-topic T      the point cloud topic DLIO registers (default /husky/sensors/seyond/points; the mast's
+                       360-degree LiDAR is /husky/sensors/ouster/points), with the matching SLAM config variant
+  --scan-period S      the scan period in seconds of DLIO's synthetic per-point timing (default 1/15; 0.05 for
+                       the 20 Hz 360-degree LiDAR)
   --no-rviz            no RViz window from the container
   --no-record          do not record the SLAM output (no scoring either)
   --no-eval            record the SLAM output but do not score it
@@ -68,7 +92,7 @@ Options:
   -h, --help           this help
 
 Results in the run folder: metrics.json (accuracy, scan matching, RAM/CPU per process, hazard mapper, loop-closure
-check), eval.png, resources.csv (RAM/CPU samples), slam.log (SLAM's console), play.log, odometry.tum, slam_output/
+check), budget.txt (the resource budget verdict), eval.png, resources.csv (RAM/CPU samples), slam.log (SLAM's console), play.log, odometry.tum, slam_output/
 (bag of /dlio/odometry, /dlio/frontend_diagnostics, /hazard/diagnostics, /tf, /tf_static).
 Compare configs: scripts/benchmark_slam.sh (repeats + tools/slam_compare.py).
 EOF
@@ -86,6 +110,15 @@ while [[ $# -gt 0 ]]; do
     --label) need "$@"; LABEL="$2"; shift 2 ;;
     --rate) need "$@"; num "$1" "$2"; RATE="$2"; shift 2 ;;
     --duration) need "$@"; num "$1" "$2"; DURATION="$2"; shift 2 ;;
+    --vio) VIO=1; shift ;;
+    --texture) TEXTURE=1; shift ;;
+    --no-hazard) HAZARD=0; shift ;;
+    --omp-passive) OMP_PASSIVE=1; shift ;;
+    --frontend-map) FRONTEND_MAP=1; shift ;;
+    --overlay-setup) need "$@"; OVERLAY_SETUP="$2"; shift 2 ;;
+    --lidar-topic) need "$@"; LIDAR_TOPIC="$2"; shift 2 ;;
+    --scan-period) need "$@"; num "$1" "$2"; SCAN_PERIOD="$2"; shift 2 ;;
+    --vio-config) need "$@"; VIO=1; VIO_CONFIG="$2"; shift 2 ;;
     --start-delay) need "$@"; num "$1" "$2"; START_DELAY="$2"; shift 2 ;;
     --tail) need "$@"; num "$1" "$2"; TAIL="$2"; shift 2 ;;
     --ready-timeout) need "$@"; num "$1" "$2"; READY_TIMEOUT="$2"; shift 2 ;;
@@ -159,6 +192,12 @@ fi
 PLAY_ARGS=(--rate "${RATE}" --disable-keyboard-controls)
 [[ -n "${DURATION}" ]] && PLAY_ARGS+=(--playback-duration "${DURATION}")
 REC_TOPICS=(/dlio/odometry /tf /tf_static /dlio/frontend_diagnostics /hazard/diagnostics)
+VIO_CONFIG_C=""
+if [[ ${VIO} -eq 1 ]]; then
+  [[ -n "${VIO_CONFIG}" ]] || VIO_CONFIG="${PKG}/config/vio/estimator_config.yaml"
+  VIO_CONFIG_C="$(to_container "${VIO_CONFIG}")" || die "--vio-config must be a file under ${REPO}/src: ${VIO_CONFIG}"
+  REC_TOPICS+=(/ov_msckf/odomimu /ov_msckf/points_msckf /ov_msckf/points_slam)
+fi
 
 echo "=========================================="
 echo "SLAM bag replay"
@@ -213,6 +252,10 @@ stop_group() {   # pid name: SIGTERM to its process group (background jobs of a 
 }
 stop_slam() {
   [[ -n "${SLAM_CLIENT}" ]] && kill -0 "${SLAM_CLIENT}" 2>/dev/null || return 0
+  if [[ ${TEXTURE} -eq 1 ]]; then
+    echo "Saving the maps (map_save service) before the stop..."
+    dc exec -T dev bash -lc "source /opt/ros/jazzy/setup.bash; source ~/slam_ws/install/setup.bash; timeout 120 ros2 service call /map_save std_srvs/srv/Empty > /dev/null 2>&1 && echo '      saved' || echo '      WARNING: map_save did not answer'"
+  fi
   echo "Stopping SLAM in the container..."
   local sig
   for sig in INT TERM; do
@@ -251,6 +294,14 @@ fi
   echo "bag=${BAG}"; echo "config=${SLAM_CONFIG_C}"; echo "config_source=${CONFIG}"; echo "rate=${RATE}"
   echo "duration=${DURATION:-all}"; echo "slam_output=$([[ ${ISOLATE} -eq 1 ]] && echo "${OUT_HOST}" || echo "as configured")"
   echo "label=${LABEL}"
+  echo "vio=$([[ ${VIO} -eq 1 ]] && echo "${VIO_CONFIG}" || echo off)"
+  echo "texture=$([[ ${TEXTURE} -eq 1 ]] && echo on || echo off)"
+  echo "hazard=$([[ ${HAZARD} -eq 1 ]] && echo on || echo off)"
+  echo "omp_passive=$([[ ${OMP_PASSIVE} -eq 1 ]] && echo on || echo off)"
+  echo "frontend_map=$([[ ${FRONTEND_MAP} -eq 1 ]] && echo on || echo off)"
+  echo "overlay_setup=${OVERLAY_SETUP:-none}"
+  echo "lidar_topic=${LIDAR_TOPIC:-default}"
+  echo "scan_period=${SCAN_PERIOD:-default}"
   echo "config_sha1=$([[ -f "${CONFIG}" ]] && sha1sum "${CONFIG}" | cut -c1-12)"   # the settings, not the run's copy
   echo "host_cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs) x $(nproc)"
   echo "started=$(date -Iseconds)"
@@ -272,10 +323,16 @@ echo "dlio_build=$(dc exec -T dev bash -c 'b=$(find -L /home/er4-user/slam_ws/in
 # ------------------------------------------------------------------ 2. SLAM, then wait until it is subscribed
 echo "[2/5] Starting SLAM in the container (console: ${RUN}/slam.log)..."
 # SLAM_REFERENCE_PATH=false: the launch skips gazebo_pose_to_aligned_path.py (a bag has no /gazebo/dynamic_pose)
-dc exec -T -e COMBINED_PARAM_FILE="${SLAM_CONFIG_C}" -e SLAM_RVIZ="${RVIZ}" -e SLAM_REFERENCE_PATH=false dev \
+dc exec -T -e COMBINED_PARAM_FILE="${SLAM_CONFIG_C}" -e SLAM_RVIZ="${RVIZ}" -e SLAM_REFERENCE_PATH=false \
+  -e SLAM_VIO="$([[ ${VIO} -eq 1 ]] && echo true || echo false)" -e SLAM_VIO_CONFIG="${VIO_CONFIG_C}" \
+  -e SLAM_TEXTURE_MAP="$([[ ${TEXTURE} -eq 1 ]] && echo true || echo false)" -e SLAM_HAZARD="$([[ ${HAZARD} -eq 1 ]] && echo true || echo false)" \
+  -e SLAM_GOMP_SPINCOUNT="$([[ ${OMP_PASSIVE} -eq 1 ]] && echo 0 || echo 300000)" \
+  -e SLAM_FRONTEND_MAP="$([[ ${FRONTEND_MAP} -eq 1 ]] && echo true || echo false)" -e SLAM_OVERLAY_SETUP="${OVERLAY_SETUP}" \
+  ${LIDAR_TOPIC:+-e LIDAR_TOPIC="${LIDAR_TOPIC}"} ${SCAN_PERIOD:+-e TIMED_CLOUD_SCAN_PERIOD="${SCAN_PERIOD}"} dev \
   bash -c "echo \$\$ > ${PIDFILE}; exec bash ${SLAM_SCRIPT}" > "${RUN}/slam.log" 2>&1 &
 SLAM_CLIENT=$!
-if ! python3 "${PKG}/tools/slam_replay_check.py" wait --timeout "${READY_TIMEOUT}" --watch-pid "${SLAM_CLIENT}"; then
+if ! python3 "${PKG}/tools/slam_replay_check.py" wait --timeout "${READY_TIMEOUT}" --watch-pid "${SLAM_CLIENT}" \
+     ${LIDAR_TOPIC:+--lidar-topic "${LIDAR_TOPIC}"}; then
   echo "---- last lines of ${RUN}/slam.log:" >&2
   tail -n 25 "${RUN}/slam.log" >&2
   exit 1
@@ -351,6 +408,10 @@ if [[ ${EVAL} -eq 1 ]]; then
              --bag "${BAG}")
   [[ -f "${BAG}/segments.json" ]] && EVAL_ARGS+=(--segments "${BAG}/segments.json")
   python3 "${PKG}/tools/slam_eval.py" "${RUN}/slam_output" "${GT}" "${EVAL_ARGS[@]}" 2>&1 | grep -v '^\[INFO\]' | sed 's/^/      /'
+  if [[ -f "${RUN}/metrics.json" ]]; then   # the resource budget (config/slam/slam_budget.json): a verdict, never a failure here
+    python3 "${PKG}/tools/slam_budget.py" "${RUN}/metrics.json" > "${RUN}/budget.txt" 2>&1 || true
+    echo "      $(tail -n 1 "${RUN}/budget.txt")   (budget.txt)"
+  fi
 else
   echo "[5/5] Not scored (--no-eval / --no-record / no ground truth)."
 fi

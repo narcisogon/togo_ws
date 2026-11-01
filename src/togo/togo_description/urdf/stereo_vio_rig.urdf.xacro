@@ -1,0 +1,144 @@
+<?xml version="1.0"?>
+<!--
+  Generic global-shutter stereo rig with its own IMU, for visual-inertial odometry (added 2026-10-31 for the
+  stereo work in docs/SLAM_SPEEDUP_PLAN.md). Two identical pinhole cameras on one rigid bar, `baseline` apart,
+  pitched down by `camera_pitch` (20 deg, so the ground stays in view when the rover crests a slope or turns
+  in place; level cameras saw mostly sky at the slope waypoint of the 2026-10-31 lap and the VIO lost every
+  feature there); a 6-axis IMU at the bar's centre, axes aligned with the rig (x forward, y left, z up). The
+  camera optical frames follow the ROS convention (z forward, x right, y down), so the fixed transforms the
+  VIO needs (camera in IMU), with s = sin(camera_pitch) and c = cos(camera_pitch), are
+      left  optical in IMU:  t = [0, +baseline/2, 0],  R = [0 -s c; -1 0 0; 0 -c -s]
+      right optical in IMU:  t = [0, -baseline/2, 0],  same R
+  (R = [0 0 1; -1 0 0; 0 -1 0] for a level camera); tools/urdf_frame_offset.py prints them from the assembled
+  model.
+
+  Gazebo: two `camera` sensors (mono8, no distortion, a little pixel noise) rendered in the same simulation
+  step, so the pair's stamps match, and an `imu` sensor with MEMS-grade noise (per-sample standard deviations
+  computed from the noise densities below at the IMU rate). All the rig's joints are plain fixed joints that
+  sdformat lumps into the parent link (like imu_0's): with <preserveFixedJoint> the links stayed separate bodies
+  and the physics let them yaw freely about z - in the 2026-10-31 bag the cameras kept their world heading while
+  the rover turned (the spin test of tools/bag_record/check_stereo_sync.py is the gate for that). Topics (gz): `<topic_base>/left/image`,
+  `<topic_base>/left/camera_info` (gz derives the info topic from the image topic's parent, hence the `/image`
+  suffix), `.../right/...`, `<topic_base>/imu`; bridged by togo_gz/config/bridge.yaml.
+-->
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+  <xacro:macro name="stereo_vio_rig"
+               params="name parent_link *origin baseline:=0.20 hfov:=1.5708 width:=640 height:=480 rate:=20
+                       camera_pitch:=0.3490659 imu_rate:=400 gyro_noise_density:=1.7e-4 accel_noise_density:=2.0e-3
+                       gyro_bias_walk:=1.9e-5 accel_bias_walk:=3.0e-3 pixel_noise:=0.005">
+    <xacro:property name="M_PI" value="3.1415926535897931"/>
+    <xacro:macro name="stereo_vio_inertial">
+      <inertial><mass value="0.001"/><inertia ixx="1e-7" ixy="0" ixz="0" iyy="1e-7" iyz="0" izz="1e-7"/></inertial>
+    </xacro:macro>
+    <!-- per-sample noise at the IMU rate: density * sqrt(rate) -->
+    <xacro:property name="gyro_sigma" value="${gyro_noise_density * (imu_rate ** 0.5)}"/>
+    <xacro:property name="accel_sigma" value="${accel_noise_density * (imu_rate ** 0.5)}"/>
+    <xacro:property name="gyro_bias_sigma" value="${gyro_bias_walk * (imu_rate ** 0.5)}"/>
+    <xacro:property name="accel_bias_sigma" value="${accel_bias_walk * (imu_rate ** 0.5)}"/>
+
+    <!-- the bar -->
+    <joint name="${name}_joint" type="fixed">
+      <parent link="${parent_link}"/>
+      <child link="${name}_link"/>
+      <xacro:insert_block name="origin"/>
+    </joint>
+    <link name="${name}_link">
+      <visual>
+        <geometry><box size="0.03 ${baseline + 0.04} 0.03"/></geometry>
+        <material name="clearpath_dark_grey"/>
+      </visual>
+      <inertial>
+        <mass value="0.25"/>
+        <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.0001" iyz="0.0" izz="0.001"/>
+      </inertial>
+    </link>
+
+    <!-- IMU at the bar's centre, rig axes -->
+    <joint name="${name}_imu_joint" type="fixed">
+      <parent link="${name}_link"/>
+      <child link="${name}_imu_link"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+    <link name="${name}_imu_link"><xacro:stereo_vio_inertial/></link>
+
+    <!-- cameras: body frame (x forward) and optical frame (z forward) each -->
+    <xacro:macro name="stereo_vio_camera" params="side y">
+      <joint name="${name}_${side}_camera_joint" type="fixed">
+        <parent link="${name}_link"/>
+        <child link="${name}_${side}_camera_frame"/>
+        <origin xyz="0 ${y} 0" rpy="0 ${camera_pitch} 0"/>
+      </joint>
+      <link name="${name}_${side}_camera_frame"><xacro:stereo_vio_inertial/></link>
+      <joint name="${name}_${side}_camera_optical_joint" type="fixed">
+        <parent link="${name}_${side}_camera_frame"/>
+        <child link="${name}_${side}_camera_optical_frame"/>
+        <origin xyz="0 0 0" rpy="${-M_PI/2} 0 ${-M_PI/2}"/>
+      </joint>
+      <link name="${name}_${side}_camera_optical_frame"><xacro:stereo_vio_inertial/></link>
+      <gazebo reference="${name}_${side}_camera_frame">
+        <sensor name="${name}_${side}" type="camera">
+          <camera>
+            <horizontal_fov>${hfov}</horizontal_fov>
+            <image>
+              <width>${width}</width>
+              <height>${height}</height>
+              <format>L8</format>
+            </image>
+            <clip>
+              <near>0.1</near>
+              <far>300</far>
+            </clip>
+            <noise>
+              <type>gaussian</type>
+              <mean>0.0</mean>
+              <stddev>${pixel_noise}</stddev>
+            </noise>
+            <optical_frame_id>${name}_${side}_camera_optical_frame</optical_frame_id>
+          </camera>
+          <always_on>1</always_on>
+          <update_rate>${rate}</update_rate>
+          <visualize>false</visualize>
+          <gz_frame_id>${name}_${side}_camera_optical_frame</gz_frame_id>
+          <topic>$(arg namespace)/sensors/${name}/${side}/image</topic>   <!-- gz puts the camera info next to it: .../${side}/camera_info -->
+        </sensor>
+      </gazebo>
+    </xacro:macro>
+    <xacro:stereo_vio_camera side="left" y="${baseline/2}"/>
+    <xacro:stereo_vio_camera side="right" y="${-baseline/2}"/>
+
+    <!-- IMU sensor with noise on every axis -->
+    <xacro:macro name="stereo_vio_axis_noise" params="sigma bias_sigma">
+      <noise type="gaussian">
+        <mean>0.0</mean>
+        <stddev>${sigma}</stddev>
+        <bias_mean>0.0</bias_mean>
+        <bias_stddev>0.0</bias_stddev>
+        <!-- no dynamic bias: Gazebo's model put a 0.3 m/s^2 offset on the accelerometer of the 2026-10-31 bag,
+             far beyond any MEMS unit, which broke the VIO's initialisation; bias_sigma is kept as a parameter -->
+        <dynamic_bias_stddev>0.0</dynamic_bias_stddev>
+        <dynamic_bias_correlation_time>400.0</dynamic_bias_correlation_time>
+      </noise>
+    </xacro:macro>
+    <gazebo reference="${name}_imu_link">
+      <sensor name="${name}_imu" type="imu">
+        <always_on>1</always_on>
+        <update_rate>${imu_rate}</update_rate>
+        <visualize>false</visualize>
+        <gz_frame_id>${name}_imu_link</gz_frame_id>
+        <topic>$(arg namespace)/sensors/${name}/imu</topic>
+        <imu>
+          <angular_velocity>
+            <x><xacro:stereo_vio_axis_noise sigma="${gyro_sigma}" bias_sigma="${gyro_bias_sigma}"/></x>
+            <y><xacro:stereo_vio_axis_noise sigma="${gyro_sigma}" bias_sigma="${gyro_bias_sigma}"/></y>
+            <z><xacro:stereo_vio_axis_noise sigma="${gyro_sigma}" bias_sigma="${gyro_bias_sigma}"/></z>
+          </angular_velocity>
+          <linear_acceleration>
+            <x><xacro:stereo_vio_axis_noise sigma="${accel_sigma}" bias_sigma="${accel_bias_sigma}"/></x>
+            <y><xacro:stereo_vio_axis_noise sigma="${accel_sigma}" bias_sigma="${accel_bias_sigma}"/></y>
+            <z><xacro:stereo_vio_axis_noise sigma="${accel_sigma}" bias_sigma="${accel_bias_sigma}"/></z>
+          </linear_acceleration>
+        </imu>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+</robot>

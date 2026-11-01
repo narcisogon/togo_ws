@@ -6,7 +6,7 @@ Usage: trim_bag.py IN_BAG OUT_BAG (--until-sim S | --laps N) [--segments ROUTE_J
 Keeps every message received until /clock reached S seconds of sim time (all topics, their recorded QoS, so
 /tf_static stays latched), writes an indexed MCAP with zstd chunks, and copies the ground truth (ground_truth.tum)
 up to S. --laps N finds S itself: LAP_MARGIN_S after the rover's Nth closest pass by its start pose (from the
-input bag's ground_truth.tum). With --segments it also writes segments.json: the sim-time spans of the route's
+input bag's ground_truth.tum; a bag that ends within that margin is kept whole). With --segments it also writes segments.json: the sim-time spans of the route's
 legs (start -> rocks -> slope -> plain -> start) from the ground truth's closest approach to each waypoint, for
 per-terrain scores.
 """
@@ -71,14 +71,21 @@ def main() -> int:
     r.open(rosbag2_py.StorageOptions(uri=str(a.in_bag), storage_id=""), rosbag2_py.ConverterOptions("cdr", "cdr"))
     r.set_filter(rosbag2_py.StorageFilter(topics=["/clock"]))
     cut = None
+    last_clock, last_t = None, None
     while r.has_next():
         _, data, t = r.read_next()
         c = deserialize_message(data, Clock).clock
-        if c.sec + c.nanosec * 1e-9 >= a.until_sim:
+        last_clock, last_t = c.sec + c.nanosec * 1e-9, t
+        if last_clock >= a.until_sim:
             cut = t
             break
     if cut is None:
-        raise SystemExit(f"/clock never reaches {a.until_sim} s")
+        # a lap that ends where the bag ends (a one-lap recording stops at the start pose): keep everything
+        if a.laps is not None and last_clock is not None and last_clock >= a.until_sim - LAP_MARGIN_S:
+            print(f"/clock ends at {last_clock:.2f} s, before the {LAP_MARGIN_S:.0f} s margin: keeping the whole bag")
+            cut, a.until_sim = last_t, last_clock
+        else:
+            raise SystemExit(f"/clock never reaches {a.until_sim} s")
     del r
 
     # 2. copy everything up to the cut

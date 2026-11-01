@@ -72,4 +72,6 @@ if [[ ! -x "${PY}" ]]; then
   PY=python3
 fi
 echo "Running ${#FILES[@]} test files (${GROUP}) with ${PY}"
-exec "${PY}" -m pytest -q -p no:cacheprovider "$@" "${FILES[@]}"
+# Without ROS on the path: a sourced ROS 2 puts its site-packages on PYTHONPATH, pytest then autoloads the
+# launch_testing plugin found there, and that import fails in the venv (no lark). The tests need no ROS module.
+exec env -u PYTHONPATH -u PYTEST_ADDOPTS "${PY}" -m pytest -q -p no:cacheprovider "$@" "${FILES[@]}"

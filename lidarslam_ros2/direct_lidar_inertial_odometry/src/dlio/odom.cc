@@ -99,6 +99,15 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   imu_sub_opt.callback_group = this->imu_cb_group;
   this->imu_sub = this->create_subscription<sensor_msgs::msg::Imu>("imu", rclcpp::SensorDataQoS(),
       std::bind(&dlio::OdomNode::callbackImu, this, std::placeholders::_1), imu_sub_opt);
+  if (this->vio_enabled_ || this->vio_prior_mode_ > 0) {
+    auto vio_sub_opt = rclcpp::SubscriptionOptions();
+    vio_sub_opt.callback_group = this->imu_cb_group;   // serialised with the IMU callback; the state lock does the rest
+    this->vio_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(this->vio_topic_, rclcpp::SensorDataQoS(),
+        std::bind(&dlio::OdomNode::callbackVio, this, std::placeholders::_1), vio_sub_opt);
+    RCLCPP_INFO(this->get_logger(), "VIO from %s: filter measurements %s (velocity %s, rotation delta %s), registration prior mode %d",
+                this->vio_topic_.c_str(), this->vio_enabled_ ? "on" : "off", this->vio_use_velocity_ ? "on" : "off",
+                this->vio_use_rotation_ ? "on" : "off", this->vio_prior_mode_);
+  }
 
   this->odom_pub     = this->create_publisher<nav_msgs::msg::Odometry>("odom", 1);
   this->pose_pub     = this->create_publisher<geometry_msgs::msg::PoseStamped>("pose", 1);
@@ -367,6 +376,7 @@ void dlio::OdomNode::getParams() {
 
   // Deskew Flag
   dlio::declare_param(this, "pointcloud/deskew", this->deskew_, true);
+  dlio::declare_param(this, "pointcloud/publishEveryNth", this->publish_every_nth_, 1);
   dlio::declare_param(
     this, "pointcloud/syntheticTiming/enabled", this->synthetic_timing_enabled_, false);
   dlio::declare_param(
@@ -588,6 +598,7 @@ void dlio::OdomNode::getParams() {
       this->recovery_skip_when_timing_active_, true);
   dlio::declare_param(this, "odom/gicp/recovery/yawOffsetsDeg",
       this->recovery_yaw_offsets_deg_, std::vector<double>{0.0, -10.0, 10.0, -20.0, 20.0});
+  dlio::declare_param(this, "odom/gicp/recovery/reseedFromFilter", this->recovery_reseed_from_filter_, false);
 
   // Geometric Observer
   dlio::declare_param(this, "odom/geo/Kp", this->geo_Kp_, 1.0);
@@ -637,6 +648,35 @@ void dlio::OdomNode::getParams() {
     this->iekf_filter_.reset(s_att, s_pos, s_vel, s_bg, s_ba);
     this->iekf_init_std_[0] = s_att; this->iekf_init_std_[1] = s_pos; this->iekf_init_std_[2] = s_vel;
     this->iekf_init_std_[3] = s_bg; this->iekf_init_std_[4] = s_ba;
+  }
+  // VIO (OpenVINS) measurements into the output filter
+  dlio::declare_param(this, "odom/iekf/vio/enabled", this->vio_enabled_, false);
+  dlio::declare_param(this, "odom/iekf/vio/topic", this->vio_topic_, std::string("/ov_msckf/odomimu"));
+  dlio::declare_param(this, "odom/iekf/vio/useVelocity", this->vio_use_velocity_, true);
+  dlio::declare_param(this, "odom/iekf/vio/useRotation", this->vio_use_rotation_, true);
+  dlio::declare_param(this, "odom/iekf/vio/velocityStd", this->vio_velocity_std_, 0.05);
+  dlio::declare_param(this, "odom/iekf/vio/velocityStdMin", this->vio_velocity_std_min_, 0.02);
+  dlio::declare_param(this, "odom/iekf/vio/rotationWindowSec", this->vio_rotation_window_sec_, 0.8);
+  dlio::declare_param(this, "odom/iekf/vio/rotationStdDeg", this->vio_rotation_std_deg_, 0.3);
+  dlio::declare_param(this, "odom/iekf/vio/maxAgeSec", this->vio_max_age_sec_, 0.25);
+  dlio::declare_param(this, "odom/iekf/vio/gateSigma", this->vio_gate_sigma_, 3.0);
+  dlio::declare_param(this, "odom/iekf/vio/maxSpeed", this->vio_max_speed_mps_, 2.0);
+  dlio::declare_param(this, "odom/iekf/vio/maxGatedStreak", this->vio_max_gated_streak_, 50);
+  dlio::declare_param(this, "odom/iekf/vio/frameJumpM", this->vio_frame_jump_m_, 0.5);
+  dlio::declare_param(this, "odom/gicp/prior/vioMode", this->vio_prior_mode_, 0);
+  dlio::declare_param(this, "odom/gicp/prior/vioMaxGapSec", this->vio_prior_max_gap_sec_, 0.08);
+  this->vio_prior_mode_ = std::max(0, std::min(2, this->vio_prior_mode_));
+  {
+    std::vector<double> t_bv, r_bv;
+    dlio::declare_param(this, "extrinsics/baselink2vio/t", t_bv, std::vector<double>{0.45, 0.0, 0.50});
+    dlio::declare_param(this, "extrinsics/baselink2vio/R", r_bv,
+                        std::vector<double>{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0});
+    this->vio_t_bv_ = Eigen::Vector3f(t_bv[0], t_bv[1], t_bv[2]);
+    this->vio_R_bv_ = Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(r_bv.data()).cast<float>();
+  }
+  if (this->vio_enabled_ && !this->iekf_output_) {
+    RCLCPP_WARN(this->get_logger(), "odom/iekf/vio/enabled needs odom/geo/estimator: iekf_output; VIO measurements off");
+    this->vio_enabled_ = false;
   }
 }
 
@@ -806,6 +846,13 @@ void dlio::OdomNode::publishCloud(pcl::PointCloud<PointType>::ConstPtr published
   if (this->wait_until_move_) {
     if (this->length_traversed < 0.1) { return; }
   }
+  // every Nth scan only (pointcloud/publishEveryNth): the consumers that need every scan take it from the
+  // keyframe stream (map node) or at their own rate (hazard mapper); the transform + serialisation of 15k
+  // points at 20 Hz was a measurable share of the frontend's core
+  const uint64_t publish_index = this->publish_scan_counter_++;
+  if (this->publish_every_nth_ > 1 && publish_index % static_cast<uint64_t>(this->publish_every_nth_) != 0) {
+    return;
+  }
 
   pcl::PointCloud<PointType>::Ptr deskewed_scan_t_ = std::make_shared<pcl::PointCloud<PointType>>();
 
@@ -948,7 +995,9 @@ void dlio::OdomNode::publishDiagnostics(float status_code, float raw_points, flo
     this->iekf_pos_std_.load(),           // index 71 (0 unless odom/geo/estimator: iekf | iekf_output)
     this->iekf_att_std_deg_.load(),       // index 72
     this->iekf_offset_m_.load(),          // index 73: |output filter - observer| position (m), iekf_output only
-    this->iekf_nis_last_.load()           // index 74: NIS of the last filter update (chi-square, 6 dof)
+    this->iekf_nis_last_.load(),          // index 74: NIS of the last filter update (chi-square, 6 dof)
+    this->vio_innov_mps_.load(),          // index 75: last VIO velocity innovation (m/s), 0 unless odom/iekf/vio/enabled
+    this->vio_nis_last_.load()            // index 76: NIS of the last VIO velocity update (chi-square, 3 dof)
   };
   this->diagnostics_pub->publish(msg);
 }
@@ -1355,6 +1404,8 @@ void dlio::OdomNode::preprocessPoints() {
       } else {
         this->T_prior = this->T;
       }
+      Eigen::Matrix4f vio_prior_delta;
+      this->applyVioPrior(vio_prior_delta);   // the scan is placed with T_prior below
 
     }
 
@@ -1509,11 +1560,13 @@ void dlio::OdomNode::deskewPointcloud() {
 
   // update prior to be the estimated pose at the median time of the scan (corresponds to this->scan_stamp)
   this->T_prior = frames[median_pt_index];
+  Eigen::Matrix4f vio_prior_delta;
+  this->applyVioPrior(vio_prior_delta);   // identity unless the VIO prior replaced the IMU's
 
 #pragma omp parallel for num_threads(this->num_threads_)
   for (int i = 0; i < timestamps.size(); i++) {
 
-    Eigen::Matrix4f T = frames[i] * this->extrinsics.baselink2lidar_T;
+    Eigen::Matrix4f T = vio_prior_delta * frames[i] * this->extrinsics.baselink2lidar_T;
 
     // transform point to world frame
     for (int k = unique_time_indices[i]; k < unique_time_indices[i+1]; k++) {
@@ -2707,6 +2760,20 @@ bool dlio::OdomNode::getNextPose() {
 
     if (!this->freeze_on_bad_correction_) {
       this->T = this->T_prior;
+      if (this->recovery_reseed_from_filter_ && this->iekf_output_ && this->fstate_synced_ && this->vio_enabled_) {
+        // Re-seed: the output filter carried the IMU and the VIO through the failed registration, so the chain
+        // restarts from its pose at the scan time rather than from the IMU prior alone
+        Eigen::Vector3f p_f = this->fstate_.p;
+        Eigen::Quaternionf q_f = this->fstate_.q;
+        {
+          std::lock_guard<std::mutex> lock(this->geo.mtx);
+          this->lookupHistory(this->fstate_history_, this->scan_stamp, p_f, q_f);
+        }
+        this->T.block<3, 3>(0, 0) = q_f.toRotationMatrix();
+        this->T.block<3, 1>(0, 3) = p_f;
+        this->recordDiagnosticEvent("registration_reseed_from_filter",
+                                    "rejected registration re-anchored on the output filter's pose (IMU + VIO)");
+      }
       this->T_corr = Eigen::Matrix4f::Identity();
       this->propagateGICP();
       std::lock_guard<std::mutex> lock(this->geo.mtx);
@@ -3504,6 +3571,286 @@ bool dlio::OdomNode::lookupHistory(const std::deque<StateSnapshot>& history, dou
   return true;
 }
 
+// The correction of the output filter's state from an update whose measurement was valid at `stamp`: the
+// attitude part is in the body frame of that time (q_ref) and is carried into the current body frame; position,
+// velocity and biases as they are; the history entries after the stamp carry the same correction, so later
+// references include it. Under geo.mtx.
+void dlio::OdomNode::applyFilterCorrection(const Eigen::Matrix<double, 15, 1>& dx, const Eigen::Quaternionf& q_ref,
+                                           double stamp) {
+  const Eigen::Vector3f dth_ref = dx.head<3>().cast<float>();
+  const Eigen::Vector3f dp = dx.segment<3>(3).cast<float>();
+  auto rotate_by = [](Eigen::Quaternionf& q, const Eigen::Quaternionf& q_at_stamp, const Eigen::Vector3f& dth) {
+    const Eigen::Quaternionf d_age = q_at_stamp.conjugate() * q;   // body rotation since the measurement time
+    const Eigen::Vector3f dth_now = d_age.conjugate()._transformVector(dth);
+    const float ang = dth_now.norm();
+    if (ang > 1e-9f) {
+      q = (q * Eigen::Quaternionf(Eigen::AngleAxisf(ang, dth_now / ang))).normalized();
+    }
+  };
+  rotate_by(this->fstate_.q, q_ref, dth_ref);
+  this->fstate_.p += dp;
+  this->fstate_.v.lin.w += dx.segment<3>(6).cast<float>();
+  this->fstate_.v.lin.b = this->fstate_.q.toRotationMatrix().inverse() * this->fstate_.v.lin.w;
+  this->fstate_.b.gyro += dx.segment<3>(9).cast<float>();
+  this->fstate_.b.gyro = this->fstate_.b.gyro.array().min(this->geo_gbias_max_).max(-this->geo_gbias_max_);
+  this->fstate_.b.accel += dx.segment<3>(12).cast<float>();
+  this->fstate_.b.accel = this->fstate_.b.accel.array().min(this->geo_abias_max_).max(-this->geo_abias_max_);
+  for (auto& snap : this->fstate_history_) {
+    if (snap.stamp <= stamp) { continue; }
+    snap.p[0] += dp[0]; snap.p[1] += dp[1]; snap.p[2] += dp[2];
+    Eigen::Quaternionf qs(snap.q[0], snap.q[1], snap.q[2], snap.q[3]);
+    rotate_by(qs, q_ref, dth_ref);
+    snap.q[0] = qs.w(); snap.q[1] = qs.x(); snap.q[2] = qs.y(); snap.q[3] = qs.z();
+  }
+}
+
+// VIO odometry (OpenVINS /ov_msckf/odomimu: the rig IMU's pose in the VIO's own gravity-aligned frame, its velocity
+// in the twist in the rig's body axes) as measurements of the output filter, at the message's stamp against the
+// filter's history. Two measurements, each optional (odom/iekf/vio/useVelocity, useRotation):
+//   1. body-frame velocity of base_link: z = R_bv v_rig - omega x t_bv, h(x) = R(q)^T v_world;
+//      H = [ [h]x  0  R^T  0  0 ]. The VIO's frame offset to odom never enters (nothing is compared in a world frame).
+//   2. the rotation over the last window (VIO attitude now against its attitude window seconds ago, in base axes)
+//      against the filter's rotation over the same span, as a gyro-bias observation: H = [ 0 0 0 -dt*I 0 ].
+// Both inflate R with the measurement's age and, beyond gateSigma, with the innovation itself (a soft gate: a
+// surprising VIO message counts less, it is never dropped).
+void dlio::OdomNode::callbackVio(const nav_msgs::msg::Odometry::SharedPtr msg) {
+  if (this->shutting_down_.load()) {
+    return;
+  }
+  const double stamp = rclcpp::Time(msg->header.stamp).seconds();
+  const Eigen::Quaternionf q_vio = Eigen::Quaternionf(msg->pose.pose.orientation.w, msg->pose.pose.orientation.x,
+                                                      msg->pose.pose.orientation.y, msg->pose.pose.orientation.z).normalized();
+  {
+    std::lock_guard<std::mutex> vlock(this->vio_mtx_);
+    if (!this->vio_history_.empty()) {
+      const Eigen::Vector3f p_new(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
+      const VioSample& last = this->vio_history_.back();
+      if (stamp < last.stamp || (p_new - last.p).norm() > this->vio_frame_jump_m_) {
+        this->vio_history_.clear();          // a restarted VIO: its new frame has nothing to do with the old one
+        ++this->vio_frame_resets_;
+      }
+    }
+    this->vio_history_.push_back({stamp, q_vio,
+                                  Eigen::Vector3f(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z),
+                                  Eigen::Vector3f(msg->twist.twist.linear.x, msg->twist.twist.linear.y, msg->twist.twist.linear.z)});
+    const double keep = std::max(1.0, 2.0 * std::max(0.1, this->vio_rotation_window_sec_));
+    while (!this->vio_history_.empty() && this->vio_history_.front().stamp < stamp - keep) {
+      this->vio_history_.pop_front();
+    }
+  }
+  if (!this->vio_enabled_ || !this->iekf_output_) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(this->geo.mtx);
+  if (!this->fstate_synced_) {
+    return;
+  }
+  const double age = this->imu_meas.stamp - stamp;
+  if (age > this->vio_max_age_sec_ || age < -0.05) {
+    ++this->vio_skipped_;
+    return;
+  }
+  Eigen::Vector3f p_ref = this->fstate_.p;
+  Eigen::Quaternionf q_ref = this->fstate_.q;
+  if (!this->lookupHistory(this->fstate_history_, stamp, p_ref, q_ref)) {
+    // a message newer than the latest IMU sample by a few milliseconds keeps the current state as its reference
+    const bool slightly_ahead = !this->fstate_history_.empty() && stamp > this->fstate_history_.back().stamp &&
+                                stamp - this->fstate_history_.back().stamp < 0.02;
+    if (!slightly_ahead) {
+      ++this->vio_skipped_;
+      return;
+    }
+  }
+  {
+    const Eigen::Vector3f v_msg(msg->twist.twist.linear.x, msg->twist.twist.linear.y, msg->twist.twist.linear.z);
+    if (!v_msg.allFinite() || v_msg.norm() > this->vio_max_speed_mps_) {
+      ++this->vio_implausible_;      // a diverged VIO: nothing of this message reaches the filter
+      return;
+    }
+  }
+  const double age_inflate = 1.0 + std::max(0.0, age) / std::max(1e-3, this->vio_max_age_sec_);
+  const double gate2 = this->vio_gate_sigma_ * this->vio_gate_sigma_ * 3.0;   // 3 dof
+  double nis = 0.0;
+
+  if (this->vio_use_velocity_) {
+    const Eigen::Vector3f v_rig(msg->twist.twist.linear.x, msg->twist.twist.linear.y, msg->twist.twist.linear.z);
+    const Eigen::Vector3f omega = this->fstate_.v.ang.b;                           // base body rate, bias-corrected
+    const Eigen::Vector3f z = this->vio_R_bv_ * v_rig - omega.cross(this->vio_t_bv_);   // base_link velocity, base axes
+    const Eigen::Matrix3d r_ref = q_ref.toRotationMatrix().cast<double>();
+    const Eigen::Vector3d h = r_ref.transpose() * this->fstate_.v.lin.w.cast<double>();
+    const Eigen::Vector3d nu = z.cast<double>() - h;
+    Eigen::Matrix<double, 3, 15> hj = Eigen::Matrix<double, 3, 15>::Zero();
+    hj.block<3, 3>(0, 0) = ErrorStateFilter::skew(h);
+    hj.block<3, 3>(0, 6) = r_ref.transpose();
+    Eigen::Matrix3d rm = Eigen::Matrix3d::Zero();
+    for (int k = 0; k < 3; ++k) {
+      const double c = msg->twist.covariance[k * 7];
+      double var = (std::isfinite(c) && c > 0.0) ? c : this->vio_velocity_std_ * this->vio_velocity_std_;
+      var = std::max(var, this->vio_velocity_std_min_ * this->vio_velocity_std_min_);
+      rm(k, k) = var * age_inflate;
+    }
+    const Eigen::Matrix3d s = hj * this->iekf_filter_.P() * hj.transpose() + rm;
+    const double mahal = nu.dot(s.ldlt().solve(nu));
+    if (mahal > gate2) {
+      ++this->vio_gated_;
+      if (++this->vio_gated_streak_ > this->vio_max_gated_streak_) {
+        ++this->vio_suspended_;      // persistently inconsistent: the VIO stays out until an innovation passes
+        return;
+      }
+      rm *= mahal / gate2;
+    } else {
+      this->vio_gated_streak_ = 0;
+    }
+    const Eigen::Matrix<double, 15, 1> dx = this->iekf_filter_.update<3>(hj, nu, rm, nis);
+    if (dx.allFinite()) {
+      this->applyFilterCorrection(dx, q_ref, stamp);
+    }
+    this->vio_innov_mps_ = static_cast<float>(nu.norm());
+    this->vio_nis_sum_ += nis;
+    this->vio_nis_last_ = static_cast<float>(nis);
+    ++this->vio_updates_;
+  }
+
+  VioSample s0c;
+  bool have_s0 = false;
+  if (this->vio_use_rotation_) {
+    std::lock_guard<std::mutex> vlock(this->vio_mtx_);
+    const double t0_wanted = stamp - this->vio_rotation_window_sec_;
+    const VioSample* s0 = nullptr;
+    for (const auto& s : this->vio_history_) {
+      if (s0 == nullptr || std::fabs(s.stamp - t0_wanted) < std::fabs(s0->stamp - t0_wanted)) { s0 = &s; }
+    }
+    if (s0 != nullptr && this->vio_history_.size() >= 2) { s0c = *s0; have_s0 = true; }
+  }
+  if (have_s0) {
+    const VioSample* s0 = &s0c;
+    const double dt = stamp - s0->stamp;
+    Eigen::Vector3f p0, p1;
+    Eigen::Quaternionf q0, q1;
+    if (s0 && dt > 0.5 * this->vio_rotation_window_sec_ &&
+        this->lookupHistory(this->fstate_history_, s0->stamp, p0, q0) && this->lookupHistory(this->fstate_history_, stamp, p1, q1)) {
+      // the rig's rotation over the window in base axes, and the filter's
+      const Eigen::Matrix3f dr_rig = (s0->q.conjugate() * q_vio).toRotationMatrix();
+      const Eigen::Matrix3f dr_vio = this->vio_R_bv_ * dr_rig * this->vio_R_bv_.transpose();
+      const Eigen::Matrix3f dr_f = (q0.conjugate() * q1).toRotationMatrix();
+      const Eigen::AngleAxisf aa(Eigen::Quaternionf(dr_f.transpose() * dr_vio).normalized());
+      Eigen::Vector3d nu = Eigen::Vector3d::Zero();
+      if (std::isfinite(aa.angle()) && aa.angle() > 1e-9f) {
+        nu = (aa.angle() * aa.axis()).cast<double>();
+      }
+      Eigen::Matrix<double, 3, 15> hj = Eigen::Matrix<double, 3, 15>::Zero();
+      hj.block<3, 3>(0, 9) = -dt * Eigen::Matrix3d::Identity();
+      const double sr = this->vio_rotation_std_deg_ * M_PI / 180.0;
+      Eigen::Matrix3d rm = Eigen::Matrix3d::Identity() * (sr * sr * age_inflate);
+      const Eigen::Matrix3d s = hj * this->iekf_filter_.P() * hj.transpose() + rm;
+      const double mahal = nu.dot(s.ldlt().solve(nu));
+      if (mahal > gate2) {
+        rm *= mahal / gate2;
+        ++this->vio_gated_;
+      }
+      double nis_r = 0.0;
+      const Eigen::Matrix<double, 15, 1> dx = this->iekf_filter_.update<3>(hj, nu, rm, nis_r);
+      if (dx.allFinite()) {
+        this->applyFilterCorrection(dx, q1, stamp);
+      }
+      this->vio_nis_sum_ += nis_r;
+      ++this->vio_updates_;
+    }
+  }
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
+    "iekf_output vio: %llu updates, %llu skipped (stale or no history), %llu gated, %llu implausible, %llu suspended; NIS %.1f mean; last velocity innovation %.1f mm/s, age %.0f ms; prior: %llu used, %llu fallbacks, last delta %.0f mm; %llu VIO frame resets",
+    static_cast<unsigned long long>(this->vio_updates_), static_cast<unsigned long long>(this->vio_skipped_),
+    static_cast<unsigned long long>(this->vio_gated_), static_cast<unsigned long long>(this->vio_implausible_),
+    static_cast<unsigned long long>(this->vio_suspended_), this->vio_nis_sum_ / static_cast<double>(std::max<uint64_t>(1, this->vio_updates_)),
+    this->vio_innov_mps_.load() * 1000.0, age * 1000.0, static_cast<unsigned long long>(this->vio_prior_used_),
+    static_cast<unsigned long long>(this->vio_prior_fallbacks_), this->vio_prior_delta_mm_.load(),
+    static_cast<unsigned long long>(this->vio_frame_resets_));
+}
+
+// The VIO's pose (rig IMU in the VIO's own frame) at time t: interpolated between the two messages around t, or
+// extrapolated with the body velocity up to odom/gicp/prior/vioMaxGapSec beyond the last (or before the first).
+bool dlio::OdomNode::vioPoseAt(double t, Eigen::Quaternionf& q, Eigen::Vector3f& p) const {
+  std::lock_guard<std::mutex> vlock(this->vio_mtx_);
+  if (this->vio_history_.empty()) {
+    return false;
+  }
+  const double gap = this->vio_prior_max_gap_sec_;
+  const VioSample& first = this->vio_history_.front();
+  const VioSample& last = this->vio_history_.back();
+  if (t >= last.stamp) {
+    const double dt = t - last.stamp;
+    if (dt > gap) { return false; }
+    q = last.q;
+    p = last.p + last.q.toRotationMatrix() * last.v * static_cast<float>(dt);
+    return true;
+  }
+  if (t <= first.stamp) {
+    const double dt = t - first.stamp;
+    if (-dt > gap) { return false; }
+    q = first.q;
+    p = first.p + first.q.toRotationMatrix() * first.v * static_cast<float>(dt);
+    return true;
+  }
+  auto it = std::lower_bound(this->vio_history_.begin(), this->vio_history_.end(), t,
+                             [](const VioSample& s, double tt) { return s.stamp < tt; });
+  const VioSample& b = *it;
+  const VioSample& a = *std::prev(it);
+  const double span = b.stamp - a.stamp;
+  const float w = span > 1e-9 ? static_cast<float>((t - a.stamp) / span) : 0.0f;
+  q = a.q.slerp(w, b.q).normalized();
+  p = a.p + w * (b.p - a.p);
+  return true;
+}
+
+// The registration prior from the VIO: the rig's motion between the two scan stamps, moved into base_link axes
+// with the rig extrinsics, applied to the registered pose at the previous scan.
+bool dlio::OdomNode::vioPriorPose(double t_prev, double t_now, const Eigen::Quaternionf& q_prev,
+                                  const Eigen::Vector3f& p_prev, Eigen::Matrix4f& out) const {
+  Eigen::Quaternionf q0, q1;
+  Eigen::Vector3f p0, p1;
+  if (!(t_now > t_prev) || !this->vioPoseAt(t_prev, q0, p0) || !this->vioPoseAt(t_now, q1, p1)) {
+    return false;
+  }
+  const Eigen::Matrix3f r0 = q0.toRotationMatrix();
+  const Eigen::Matrix3f r_rig = r0.transpose() * q1.toRotationMatrix();       // rig rotation over the interval
+  const Eigen::Vector3f t_rig = r0.transpose() * (p1 - p0);                    // rig translation, in the rig's start axes
+  const Eigen::Matrix3f r_b = this->vio_R_bv_ * r_rig * this->vio_R_bv_.transpose();
+  const Eigen::Vector3f t_b = this->vio_R_bv_ * t_rig + this->vio_t_bv_ - r_b * this->vio_t_bv_;   // base_link motion
+  if (!r_b.allFinite() || !t_b.allFinite() || t_b.norm() / (t_now - t_prev) > this->vio_max_speed_mps_) {
+    return false;
+  }
+  const Eigen::Matrix3f r_prev = q_prev.toRotationMatrix();
+  out.setIdentity();
+  out.block<3, 3>(0, 0) = r_prev * r_b;
+  out.block<3, 1>(0, 3) = p_prev + r_prev * t_b;
+  return true;
+}
+
+// Replaces T_prior (just set from the IMU integration) by the VIO's prior when the VIO covers the interval;
+// delta = new * old^-1 so a caller that already placed points with the old prior can move them along.
+void dlio::OdomNode::applyVioPrior(Eigen::Matrix4f& delta) {
+  delta.setIdentity();
+  if (this->vio_prior_mode_ <= 0) {
+    return;
+  }
+  Eigen::Matrix4f t_vio;
+  if (!this->vioPriorPose(this->prev_scan_stamp, this->scan_stamp, this->lidarPose.q, this->lidarPose.p, t_vio)) {
+    ++this->vio_prior_fallbacks_;
+    return;
+  }
+  const Eigen::Matrix4f old = this->T_prior;
+  Eigen::Matrix4f nw = old;
+  if (this->vio_prior_mode_ == 1) {
+    nw.block<3, 1>(0, 3) = t_vio.block<3, 1>(0, 3);
+  } else {
+    nw = t_vio;
+  }
+  this->vio_prior_delta_mm_ = (nw.block<3, 1>(0, 3) - old.block<3, 1>(0, 3)).norm() * 1000.0f;
+  delta = nw * old.inverse();
+  this->T_prior = nw;
+  ++this->vio_prior_used_;
+}
+
 // The plain Kalman update of the output filter (odom/geo/estimator: iekf_output), under geo.mtx: the registration
 // pose (pin, qin, valid at the scan time) against the filter's own state at the scan time, the measurement
 // covariance from the scan's Hessian (scan only, scaled by odom/iekf/hessianScale, floored), the correction of all
@@ -3569,34 +3916,8 @@ void dlio::OdomNode::outputFilterUpdate(const Eigen::Vector3f& pin, const Eigen:
   this->iekf_nis_sum_ += nis;
   this->iekf_nis_last_ = static_cast<float>(nis);
 
-  // 5. apply to the filter's state: the attitude shift carried from the scan-time body frame into the current one
-  const Eigen::Vector3f dth_ref = dx.head<3>().cast<float>();
-  const Eigen::Vector3f dp = dx.segment<3>(3).cast<float>();
-  auto rotate_by = [](Eigen::Quaternionf& q, const Eigen::Quaternionf& q_at_scan, const Eigen::Vector3f& dth) {
-    const Eigen::Quaternionf d_age = q_at_scan.conjugate() * q;   // body rotation since the scan time
-    const Eigen::Vector3f dth_now = d_age.conjugate()._transformVector(dth);
-    const float ang = dth_now.norm();
-    if (ang > 1e-9f) {
-      q = (q * Eigen::Quaternionf(Eigen::AngleAxisf(ang, dth_now / ang))).normalized();
-    }
-  };
-  rotate_by(this->fstate_.q, q_ref, dth_ref);
-  this->fstate_.p += dp;
-  this->fstate_.v.lin.w += dx.segment<3>(6).cast<float>();
-  this->fstate_.v.lin.b = this->fstate_.q.toRotationMatrix().inverse() * this->fstate_.v.lin.w;
-  this->fstate_.b.gyro += dx.segment<3>(9).cast<float>();
-  this->fstate_.b.gyro = this->fstate_.b.gyro.array().min(this->geo_gbias_max_).max(-this->geo_gbias_max_);
-  this->fstate_.b.accel += dx.segment<3>(12).cast<float>();
-  this->fstate_.b.accel = this->fstate_.b.accel.array().min(this->geo_abias_max_).max(-this->geo_abias_max_);
-  if (found) {
-    for (auto& snap : this->fstate_history_) {
-      if (snap.stamp <= this->scan_stamp) { continue; }
-      snap.p[0] += dp[0]; snap.p[1] += dp[1]; snap.p[2] += dp[2];
-      Eigen::Quaternionf qs(snap.q[0], snap.q[1], snap.q[2], snap.q[3]);
-      rotate_by(qs, q_ref, dth_ref);
-      snap.q[0] = qs.w(); snap.q[1] = qs.x(); snap.q[2] = qs.y(); snap.q[3] = qs.z();
-    }
-  }
+  // 5. apply to the filter's state (attitude carried from the scan-time body frame into the current one)
+  this->applyFilterCorrection(dx, q_ref, found ? this->scan_stamp : this->imu_meas.stamp);
 
   // 6. diagnostics
   const auto& P = this->iekf_filter_.P();

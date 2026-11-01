@@ -111,8 +111,10 @@ Worker::Worker(rclcpp::Node & node, std::string map_frame, std::string odom_fram
   pending_.max_age = node_.declare_parameter<double>("hazard/max_input_age_sec", 1.0);
   pending_.update_period = node_.declare_parameter<double>("hazard/update_period_sec", 0.2);
   pending_.batch_clouds = node_.declare_parameter<int>("hazard/batch_clouds", 3);
+  pending_.input_rate_hz = node_.declare_parameter<double>("hazard/input_rate_hz", 0.0);
   c.fit_threads = node_.declare_parameter<int>("hazard/fit_threads", c.fit_threads);
   c.fit_early_exit = node_.declare_parameter<bool>("hazard/fit_early_exit", c.fit_early_exit);
+  c.grow_margin = node_.declare_parameter<double>("hazard/grow_margin_m", c.grow_margin);
   c.validate();
   if (!std::isfinite(pending_.max_age) || pending_.max_age <= 0.0 ||
     !std::isfinite(pending_.update_period) || pending_.update_period < 0.05 ||
@@ -189,6 +191,19 @@ void Worker::receiveCloud(sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud)
   // Repeated/older stamps are not fresh sensor observations.
   if (pending_.cloud && rclcpp::Time(cloud->header.stamp) <=
     rclcpp::Time(pending_.cloud->header.stamp)) {return;}
+  if (pending_.input_rate_hz > 0.0) {
+    // A designed intake rate instead of an overflowing queue: consecutive scans overlap almost entirely at
+    // rover speeds, and a worker that drops two scans in three keeps uneven coverage. Skipped scans are not
+    // counted as drops.
+    const std::int64_t stamp = rclcpp::Time(cloud->header.stamp).nanoseconds();
+    if (pending_.last_accepted_stamp_ns != 0 &&
+      static_cast<double>(stamp - pending_.last_accepted_stamp_ns) * 1e-9 < 0.999 / pending_.input_rate_hz)
+    {
+      ++pending_.skipped_clouds;
+      return;
+    }
+    pending_.last_accepted_stamp_ns = stamp;
+  }
   pending_.cloud = std::move(cloud);
   pending_.clouds.push_back({pending_.cloud, std::chrono::steady_clock::now()});
   while (pending_.clouds.size() > static_cast<std::size_t>(pending_.batch_clouds)) {
@@ -597,6 +612,7 @@ bool Worker::process(const Snapshot & s)
          << ",\"config_revision\":" << completed_config_ << ",\"submaps\":" << s.sources->size()
          << ",\"rebuilt_submaps\":" << rebuilt << ",\"batch_clouds\":" << clouds.size()
          << ",\"dropped_clouds\":" << s.dropped_clouds
+         << ",\"skipped_clouds\":" << s.skipped_clouds
          << ",\"changed_cells\":" << terrain_.changedCells()
          << ",\"refitted_cells\":" << terrain_.fittedCells()
          << ",\"inflated_cells\":" << terrain_.inflatedCells()
@@ -719,9 +735,11 @@ rcl_interfaces::msg::SetParametersResult Worker::parameters(const std::vector<rc
       }
       else if (name == "hazard/fit_threads") {c.fit_threads = value.as_int();}
       else if (name == "hazard/fit_early_exit") {c.fit_early_exit = value.as_bool();}
+      else if (name == "hazard/grow_margin_m") {c.grow_margin = value.as_double();}
       else if (name == "hazard/max_input_age_sec") {candidate.max_age = value.as_double();}
       else if (name == "hazard/update_period_sec") {candidate.update_period = value.as_double();}
       else if (name == "hazard/batch_clouds") {candidate.batch_clouds = value.as_int();}
+      else if (name == "hazard/input_rate_hz") {candidate.input_rate_hz = value.as_double();}
       else {throw std::invalid_argument("unknown hazard parameter: " + name);}
     }
     candidate.config.validate();

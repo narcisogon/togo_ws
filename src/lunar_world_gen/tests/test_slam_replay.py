@@ -429,3 +429,32 @@ def test_benchmark_script_arguments():
     assert res.returncode == 2 and "--label is required" in res.stderr
     res = subprocess.run(["bash", str(bench), "--label", "x", "--repeats", "0"], capture_output=True, text=True)
     assert res.returncode == 2 and "positive integer" in res.stderr
+
+
+def test_resource_budget_tool(tmp_path):
+    """tools/slam_budget.py: within limits exits 0, an exceeded limit exits 1 and is named, a missing block is n/a."""
+    import json
+    tool = PKG / "tools" / "slam_budget.py"
+    budget = PKG / "config" / "slam" / "slam_budget.json"
+    assert json.loads(budget.read_text())["limits"], "the budget lists no limits"
+    metrics = {"resources": {"total_cpu_pct_mean": 197.2, "total_rss_peak_mb": 1891.9, "dlio_cpu_ms_per_scan": 46.4,
+                             "processes": {"graph_based_slam_node": {"cpu_pct_mean": 77.0}}},
+               "scan_matching": {"gicp_ms": {"mean": 5.9}},
+               "hazard": {"dropped_clouds": 0, "update_ms": {"p95": 186.1}}}
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps(metrics))
+    res = subprocess.run([sys.executable, str(tool), str(good)], capture_output=True, text=True)
+    assert res.returncode == 0 and "within limits" in res.stdout and "OVER" not in res.stdout
+    metrics["hazard"]["dropped_clouds"] = 12
+    metrics["resources"]["total_cpu_pct_mean"] = 343.0
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps(metrics))
+    res = subprocess.run([sys.executable, str(tool), str(bad), "--quiet"], capture_output=True, text=True)
+    assert res.returncode == 1 and "EXCEEDED" in res.stdout
+    assert "hazard clouds dropped" in res.stdout and "all SLAM processes, CPU" in res.stdout
+    del metrics["hazard"]
+    metrics["resources"]["total_cpu_pct_mean"] = 150.0
+    partial = tmp_path / "partial.json"
+    partial.write_text(json.dumps(metrics))
+    res = subprocess.run([sys.executable, str(tool), str(partial)], capture_output=True, text=True)
+    assert res.returncode == 0 and "n/a" in res.stdout and "within limits" in res.stdout

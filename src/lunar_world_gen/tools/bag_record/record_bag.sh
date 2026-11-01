@@ -24,6 +24,10 @@ LAPS=2
 DOMAIN=141
 PARTITION=bag_record
 DRY=0
+CHECK=0
+SUN=""            # --sun-intensity: the camera-exposure stand-in (world copy with a brighter sun)
+RTF=1            # --rtf: expected real-time factor; the wall-clock timeouts of the drive are divided by it
+SIM_ARGS=""      # --sim-args: extra arguments for run_apollo16_sim.sh (launch key:=value pairs)
 
 usage() {
   cat <<EOF
@@ -37,6 +41,17 @@ Options:
   --route FILE     route.json from plan_route.py (default: the benchmark route next to this script)
   --domain D       ROS domain of the recording (default ${DOMAIN}; never 29)
   --dry-run        check the inputs and print the plan, start nothing
+  --sun-intensity N  record on a copy of the world with the sun's intensity N (tools/bag_record/world_sun.py): the
+                   camera-exposure stand-in for the stereo rig (6 puts the regolith near 100 of 255); LiDAR,
+                   IMUs and physics are unaffected. Default: the world as it is (intensity 1)
+  --rtf F          expected real-time factor of the simulation (the rig's cameras bring it to about 0.4);
+                   the drive's wall-clock timeouts are divided by it. Default 1
+  --sim-args ARGS  extra arguments for scripts/run_apollo16_sim.sh, e.g. 'extra_xacro_args:=lidar360:=true'
+                   (the 360-degree LiDAR on the mast, recorded as /husky/sensors/ouster/points next to the
+                   Seyond when it exists)
+  --check-sensors  start the simulation, report the rates of the stereo rig's topics and the LiDAR/IMU for a
+                   few seconds, turn the rover in place and check that the cameras turn with it
+                   (tools/bag_record/check_stereo_sync.py), stop; records nothing
   -h, --help       this help
 EOF
 }
@@ -51,7 +66,11 @@ while [[ $# -gt 0 ]]; do
     --route) need "$@"; ROUTE="$2"; shift 2 ;;
     --domain) need "$@"; [[ "$2" =~ ^[0-9]+$ && "$2" != 29 ]] || die "--domain must be a number other than 29"
               DOMAIN="$2"; shift 2 ;;
-    --dry-run) DRY=1; shift ;;
+      --dry-run) DRY=1; shift ;;
+    --check-sensors) CHECK=1; shift ;;
+    --sun-intensity) need "$@"; [[ "$2" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "--sun-intensity must be a number"; SUN="$2"; shift 2 ;;
+    --rtf) need "$@"; [[ "$2" =~ ^0*[.]?[0-9]+([.][0-9]+)?$ ]] || die "--rtf must be a number"; RTF="$2"; shift 2 ;;
+    --sim-args) need "$@"; SIM_ARGS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option '$1' (see --help)" ;;
   esac
@@ -68,7 +87,7 @@ if [[ ${DRY} -eq 1 ]]; then
   echo "bag:        ${BAG}  (${LAPS} lap(s) of ${ROUTE})"
   echo "start pose: ${SX} ${SY} ${SZ} ${SYAW}"
   echo "isolation:  ROS_DOMAIN_ID=${DOMAIN} GZ_PARTITION=${PARTITION}"
-  echo "  ${PKG}/scripts/run_apollo16_sim.sh --headless --pose ${SX} ${SY} ${SZ} ${SYAW}   # on a pty, until READY"
+  echo "  ${PKG}/scripts/run_apollo16_sim.sh --headless --pose ${SX} ${SY} ${SZ} ${SYAW} ${SIM_ARGS}   # on a pty, until READY"
   echo "  ros2 run ros_gz_bridge parameter_bridge /model/togo/pose@geometry_msgs/msg/PoseArray[gz.msgs.Pose_V"
   echo "  ros2 bag record -o ${BAG} -s mcap --storage-preset-profile zstd_fast <sensors, tf, odom, ground truth>"
   echo "  python3 ${HERE}/bag_drive.py --route ${ROUTE} --laps ${LAPS} --hold 15 --end-hold 5"
@@ -92,10 +111,22 @@ log "bag ${BAG}; start pose ${SX} ${SY} ${SZ} ${SYAW}; laps ${LAPS}; domain ${DO
 if pgrep -f "^gz sim" > /dev/null; then log "another Gazebo simulation is running: abort"; exit 1; fi
 [[ -n "${CRASH}" ]] && ls -la "${CRASH}" > "${RUN}/crash_before.txt" 2>&1
 
+# ------------------------------------------------------------------ 0. world copy for the sun intensity
+WORLD_ARG=""
+if [[ -n "${SUN}" ]]; then
+  WORLD_SRC="${HOME}/togo_assets/lunar/worlds/apollo16_core/apollo16_core.sdf"
+  WORLD_FILE=$(python3 "${HERE}/world_sun.py" "${WORLD_SRC}" "${SUN}") || die "world copy failed"
+  WORLD_ARG=" --world ${WORLD_FILE}"
+  log "world copy with sun intensity ${SUN}: ${WORLD_FILE}"
+fi
+# wall-clock budgets of the drive, scaled by the expected real-time factor
+DRIVE_WALL=$(python3 -c "import sys; print(int(480 * ${LAPS} / ${RTF}))")
+DRIVE_TIMEOUT=$(python3 -c "import sys; print(int((300 + 600 * ${LAPS}) / ${RTF}))")
+LAUNCH_TIMEOUT=$(python3 -c "import sys; print(int((1200 + 600 * ${LAPS}) / ${RTF}))")
 # ------------------------------------------------------------------ 1. the launcher on a pty
 rm -f "${RUN}/wrapper.fifo"; mkfifo "${RUN}/wrapper.fifo"
-CMD="bash -lc 'export ROS_DOMAIN_ID=${DOMAIN} GZ_PARTITION=${PARTITION} ROS_HOME=${RUN}/ros_home_sim; cd ${REPO} && ./src/lunar_world_gen/scripts/run_apollo16_sim.sh --headless --pose ${SX} ${SY} ${SZ} ${SYAW}'"
-setsid timeout -s KILL $((1200 + 600 * LAPS)) script -qfe -c "${CMD}" "${RUN}/wrapper.log" 0<>"${RUN}/wrapper.fifo" > /dev/null 2>&1 &
+CMD="bash -lc 'export ROS_DOMAIN_ID=${DOMAIN} GZ_PARTITION=${PARTITION} ROS_HOME=${RUN}/ros_home_sim; cd ${REPO} && ./src/lunar_world_gen/scripts/run_apollo16_sim.sh --headless${WORLD_ARG} --pose ${SX} ${SY} ${SZ} ${SYAW} ${SIM_ARGS}'"
+setsid timeout -s KILL ${LAUNCH_TIMEOUT} script -qfe -c "${CMD}" "${RUN}/wrapper.log" 0<>"${RUN}/wrapper.fifo" > /dev/null 2>&1 &
 SCRIPT_PID=$!
 T0=$(date +%s.%N)
 stop_sim() {
@@ -126,6 +157,23 @@ for _ in $(seq 1 6000); do
 done
 log "READY result: ${RESULT:-timeout} after $(awk -v a="$(date +%s.%N)" -v b="${T0}" 'BEGIN { printf "%.1f", a - b }') s"
 [[ "${RESULT}" == ready ]] || { stop_sim; exit 1; }
+if [[ ${CHECK} -eq 1 ]]; then
+  # ---------------------------------------------------------------- sensor check only: rates, lockstep, then stop
+  log "sensor check (nothing recorded): rates over 12 s"
+  { echo "gz topics of the rig and the LiDARs:"; timeout 10 gz topic -l 2>/dev/null | grep -E "stereo_rig|camera|lidar" | sed 's/^/  /'; } | tee -a "${RUN}/record.log"
+  HZ_PIDS=()
+  for t in /husky/sensors/seyond/points /husky/sensors/ouster/points /husky/sensors/imu_0/data_raw /husky/sensors/stereo_rig/left/camera_info; do
+    ( timeout 14 ros2 topic hz --window 50 "${t}" 2>&1 | grep -m1 "average rate" | sed "s#^#${t}: #" ) > "${RUN}/hz_$(echo "${t#/}" | tr / _).txt" 2>&1 &
+    HZ_PIDS+=($!)
+  done
+  timeout 45 python3 "${HERE}/check_stereo_sync.py" --seconds 8 --spin 0.3 --save-dir "${RUN}" > "${RUN}/stereo_check.txt" 2>&1; CHECK_RC=$?
+  for pid in "${HZ_PIDS[@]}"; do wait "${pid}" 2>/dev/null; done      # not a bare wait: that would wait for the launcher too
+  cat "${RUN}"/hz_*.txt "${RUN}/stereo_check.txt" | tee -a "${RUN}/record.log"
+  timeout 10 ros2 topic echo --once /husky/sensors/stereo_rig/left/camera_info 2>/dev/null | grep -E "^width|^height|^distortion_model|^k:" -A3 | head -12 | tee -a "${RUN}/record.log"
+  stop_sim
+  log "sensor check exit ${CHECK_RC}; logs in ${RUN}"
+  exit "${CHECK_RC}"
+fi
 
 # ------------------------------------------------------------------ 2. ground-truth bridge (PoseArray)
 setsid ros2 run ros_gz_bridge parameter_bridge "/model/togo/pose@geometry_msgs/msg/PoseArray[gz.msgs.Pose_V" \
@@ -134,9 +182,12 @@ BRIDGE_PID=$!
 sleep 3
 
 # ------------------------------------------------------------------ 3. recorder
-TOPICS=(/husky/sensors/seyond/points /husky/sensors/imu_0/data_raw /clock /tf /tf_static
+TOPICS=(/husky/sensors/seyond/points /husky/sensors/ouster/points /husky/sensors/imu_0/data_raw /clock /tf /tf_static
         /platform_velocity_controller/odom /platform_velocity_controller/cmd_vel /joint_states
-        /ground_truth/odom /model/togo/pose)
+        /ground_truth/odom /model/togo/pose
+        /husky/sensors/stereo_rig/left/image_raw /husky/sensors/stereo_rig/left/camera_info
+        /husky/sensors/stereo_rig/right/image_raw /husky/sensors/stereo_rig/right/camera_info
+        /husky/sensors/stereo_rig/imu/data_raw)
 setsid ros2 bag record -o "${BAG}" -s mcap --storage-preset-profile zstd_fast "${TOPICS[@]}" > "${RUN}/record.out" 2>&1 &
 REC_PID=$!
 for _ in $(seq 1 150); do
@@ -149,8 +200,8 @@ sleep 2
 
 # ------------------------------------------------------------------ 4. drive
 log "driver: standstill, ${LAPS} lap(s), standstill"
-timeout -s INT $((300 + 600 * LAPS)) python3 "${HERE}/bag_drive.py" --route "${ROUTE}" --out "${RUN}" --laps "${LAPS}" \
-  --hold 15 --end-hold 5 --max-drive $((480 * LAPS)) > "${RUN}/drive.out" 2>&1     # a lap took about 375 s
+timeout -s INT ${DRIVE_TIMEOUT} python3 "${HERE}/bag_drive.py" --route "${ROUTE}" --out "${RUN}" --laps "${LAPS}" \
+  --hold 15 --end-hold 5 --max-drive ${DRIVE_WALL} > "${RUN}/drive.out" 2>&1     # a lap took about 375 s
 DRV_RC=$?
 log "driver exit ${DRV_RC}: $(tail -n 2 "${RUN}/drive.out" | tr '\n' ' ')"
 sleep 1

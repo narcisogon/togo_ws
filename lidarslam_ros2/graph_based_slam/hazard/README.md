@@ -63,7 +63,11 @@ scans on overload, and rejects repeated/out-of-order acquisition stamps.
 The persistent grid uses dense neighbor lookups for plane fitting. Inflation
 updates cover changed classifications plus the outer halo, with enough surrounding
 hazard sources to preserve maximum-cost overlaps and remove obsolete halos.
-Grid expansion recalculates inflation over the complete grid.
+Grid growth inflates nothing: the cells gained are unknown and, by the
+observation padding (slope radius on top of the inflation radii), beyond the
+reach of every hazard, so they take the unknown cost and the carried cells keep
+theirs. Growth still copies the grid; `hazard/grow_margin_m` grows it ahead of
+the observation so that copy is paid once per margin of travel.
 
 Terrain observations and temporary obstacle voxels retain graph-anchor coordinates
 and acquisition ordering. Graph corrections invalidate readiness and rebuild the map from corrected
@@ -164,6 +168,7 @@ Code defaults are listed below; the active operator settings are in the YAML.
 | `hazard/update_period_sec` | 0.2 | Maximum wall-time wait for a partial batch; not a sleep after each job |
 | `hazard/max_input_age_sec` | 1.0 | Maximum completed-map source age in ROS time |
 | `hazard/max_cells` | 4,000,000 | Grid allocation limit; exceeding it makes health false |
+| `hazard/grow_margin_m` | 0.0 | Extra extent (m) a growing side takes beyond the observation's padding; only the extent changes, never a cell |
 | `hazard/height_noise_m` | 0.01 | Base height uncertainty; increases with range and spread, decreases with bounded point support |
 | `hazard/min_plane_coverage` | 0.20 | Minimum minor-axis spatial standard deviation divided by slope radius; rejects clustered/line support |
 | `hazard/max_plane_error_m` | 0.05 | Plane RMS/residual limit; at least 75% of supporting cells must be within this error |

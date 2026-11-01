@@ -37,6 +37,7 @@ dedicated worker so navigation and graph processing remain responsive.
 #include "graph_based_slam/graph_based_slam_component.h"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -52,6 +53,7 @@ dedicated worker so navigation and graph processing remain responsive.
 #include <vector>
 
 #include "graph_based_slam/adjacent_edge_auto_scale.hpp"
+#include "graph_based_slam/dem_raster.hpp"
 #include "graph_based_slam/bev_mutual_visibility.hpp"
 #include "graph_based_slam/dynamic_object_filter.hpp"
 #include <std_msgs/msg/header.hpp>
@@ -63,130 +65,6 @@ namespace graphslam
 {
 namespace
 {
-constexpr float kDemNoData = -9999.0F;
-
-struct DemGrid
-{
-  double resolution {0.1};
-  double origin_x {0.0};
-  double origin_y {0.0};
-  int width {0};
-  int height {0};
-  std::vector<float> terrain;
-  std::vector<float> surface;
-  std::vector<float> interpolated_terrain;
-  std::vector<float> variance;
-  std::vector<float> min_z;
-  std::vector<float> max_z;
-  std::vector<uint32_t> count;
-  std::vector<uint8_t> valid;
-  std::vector<uint8_t> interpolated;
-};
-
-/*
-Summary:
-Rasterizes a corrected point cloud into percentile-based terrain heights and
-rejects invalid dimensions or grids above the configured cell limit.
-*/
-bool buildDemGrid(
-  const pcl::PointCloud<pcl::PointXYZI> & cloud,
-  double resolution,
-  int min_points,
-  double percentile,
-  int max_cells,
-  DemGrid & grid,
-  std::string & error)
-{
-  double min_x = std::numeric_limits<double>::infinity();
-  double min_y = std::numeric_limits<double>::infinity();
-  double max_x = -std::numeric_limits<double>::infinity();
-  double max_y = -std::numeric_limits<double>::infinity();
-  std::size_t finite_points = 0;
-  for (const auto & p : cloud) {
-    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
-      continue;
-    }
-    min_x = std::min(min_x, static_cast<double>(p.x));
-    min_y = std::min(min_y, static_cast<double>(p.y));
-    max_x = std::max(max_x, static_cast<double>(p.x));
-    max_y = std::max(max_y, static_cast<double>(p.y));
-    ++finite_points;
-  }
-  if (finite_points == 0 || resolution <= 0.0) {
-    error = "no finite points or invalid resolution";
-    return false;
-  }
-
-  grid.resolution = resolution;
-  grid.origin_x = std::floor(min_x / resolution) * resolution;
-  grid.origin_y = std::floor(min_y / resolution) * resolution;
-  grid.width = static_cast<int>(std::floor((max_x - grid.origin_x) / resolution)) + 1;
-  grid.height = static_cast<int>(std::floor((max_y - grid.origin_y) / resolution)) + 1;
-  const int64_t cell_count = static_cast<int64_t>(grid.width) * grid.height;
-  if (grid.width <= 0 || grid.height <= 0 || cell_count <= 0 || cell_count > max_cells) {
-    std::ostringstream ss;
-    ss << "DEM bounds require " << cell_count << " cells, maximum is " << max_cells;
-    error = ss.str();
-    return false;
-  }
-
-  std::unordered_map<std::size_t, std::vector<float>> z_values;
-  z_values.reserve(std::min<std::size_t>(finite_points, static_cast<std::size_t>(cell_count)));
-  for (const auto & p : cloud) {
-    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
-      continue;
-    }
-    const int x = static_cast<int>(std::floor((p.x - grid.origin_x) / resolution));
-    const int y = static_cast<int>(std::floor((p.y - grid.origin_y) / resolution));
-    if (x < 0 || y < 0 || x >= grid.width || y >= grid.height) {
-      continue;
-    }
-    z_values[static_cast<std::size_t>(y) * grid.width + x].push_back(p.z);
-  }
-
-  const std::size_t n = static_cast<std::size_t>(cell_count);
-  const float nan = std::numeric_limits<float>::quiet_NaN();
-  grid.terrain.assign(n, nan);
-  grid.surface.assign(n, nan);
-  grid.interpolated_terrain.assign(n, nan);
-  grid.variance.assign(n, nan);
-  grid.min_z.assign(n, nan);
-  grid.max_z.assign(n, nan);
-  grid.count.assign(n, 0U);
-  grid.valid.assign(n, 0U);
-  grid.interpolated.assign(n, 0U);
-  percentile = std::clamp(percentile, 0.0, 1.0);
-  for (auto & entry : z_values) {
-    auto & values = entry.second;
-    const std::size_t idx = entry.first;
-    grid.count[idx] = static_cast<uint32_t>(values.size());
-    if (static_cast<int>(values.size()) < min_points) {
-      continue;
-    }
-    const auto minmax = std::minmax_element(values.begin(), values.end());
-    const float cell_min = *minmax.first;
-    const float cell_max = *minmax.second;
-    const std::size_t q = static_cast<std::size_t>(
-      std::floor(percentile * static_cast<double>(values.size() - 1)));
-    std::nth_element(values.begin(), values.begin() + q, values.end());
-    const float terrain = values[q];
-    const double mean = std::accumulate(values.begin(), values.end(), 0.0) / values.size();
-    double sum_sq = 0.0;
-    for (const float z : values) {
-      const double d = static_cast<double>(z) - mean;
-      sum_sq += d * d;
-    }
-    grid.terrain[idx] = terrain;
-    grid.interpolated_terrain[idx] = terrain;
-    grid.surface[idx] = cell_max;
-    grid.min_z[idx] = cell_min;
-    grid.max_z[idx] = cell_max;
-    grid.variance[idx] = static_cast<float>(sum_sq / values.size());
-    grid.valid[idx] = 1U;
-  }
-  return true;
-}
-
 /*
 Summary:
 Fills small enclosed invalid-cell components when neighboring terrain supports
@@ -394,17 +272,25 @@ bool writeAsciiGridAtomic(
       << "yllcorner " << grid.origin_y << '\n'
       << "cellsize " << grid.resolution << '\n'
       << "NODATA_value " << kDemNoData << '\n';
-  out << std::setprecision(7);
+  // One row per write; std::to_chars with 7 significant digits gives the same text as setprecision(7) at a
+  // fraction of the iostream cost (nine rasters of 1.8 M cells each were most of a DEM pass).
+  std::string row;
+  row.reserve(static_cast<std::size_t>(grid.width) * 12 + 2);
+  char tmp[32];
   for (int y = grid.height - 1; y >= 0; --y) {
+    row.clear();
     for (int x = 0; x < grid.width; ++x) {
       const std::size_t idx = static_cast<std::size_t>(y) * grid.width + x;
       const float value = value_fn(idx);
-      out << (std::isfinite(value) ? value : kDemNoData);
+      const float written = std::isfinite(value) ? value : kDemNoData;
+      const auto r = std::to_chars(tmp, tmp + sizeof(tmp), written, std::chars_format::general, 7);
+      row.append(tmp, r.ptr);
       if (x + 1 < grid.width) {
-        out << ' ';
+        row.push_back(' ');
       }
     }
-    out << '\n';
+    row.push_back('\n');
+    out.write(row.data(), static_cast<std::streamsize>(row.size()));
   }
   out.close();
   if (!out) {
@@ -453,21 +339,45 @@ void GraphBasedSlamComponent::scheduleDemJob(
   if (!force && dem_last_scheduled_time_.time_since_epoch().count() != 0 &&
       std::chrono::duration<double>(now - dem_last_scheduled_time_).count() <
       dem_update_period_sec_) {
+    return;                      // the points not yet handed over wait for the next job
+  }
+  // Incremental: the job carries only the points appended to the assembled map since the previous job (a
+  // copy of just those), or every point after a rebuild of the assembled map (dem_full_pending_).
+  const bool full = dem_full_pending_ || dem_points_sent_ > cloud->size();
+  const std::size_t from = full ? 0 : dem_points_sent_;
+  if (!full && from >= cloud->size() && !force) {
     return;
   }
   dem_last_scheduled_time_ = now;
   auto job = std::make_unique<DemJob>();
-  // Aggregate map storage is persistent and may be extended by a later
-  // append-only publish while this worker is rasterizing. Give the DEM an
-  // immutable snapshot so the background read cannot race that append.
-  job->cloud.reset(new pcl::PointCloud<pcl::PointXYZI>(*cloud));
+  job->cloud.reset(new pcl::PointCloud<pcl::PointXYZI>());
+  job->cloud->points.assign(cloud->points.begin() + static_cast<std::ptrdiff_t>(from), cloud->points.end());
+  job->cloud->width = static_cast<uint32_t>(job->cloud->points.size());
+  job->cloud->height = 1;
   job->revision = dem_revision_counter_.fetch_add(1) + 1;
   job->stamp = stamp;
+  job->full = full;
+  job->write = force || dem_last_write_time_.time_since_epoch().count() == 0 ||
+    std::chrono::duration<double>(now - dem_last_write_time_).count() >= dem_write_period_sec_;
+  if (job->write) {
+    dem_last_write_time_ = now;
+  }
+  dem_points_sent_ = cloud->size();
+  dem_full_pending_ = false;
   {
     std::lock_guard<std::mutex> lock(dem_worker_mtx_);
-    // Queue depth one: a fresher corrected-map snapshot supersedes an older
-    // pending job. The active job, if any, is allowed to finish safely.
-    pending_dem_job_ = std::move(job);
+    // Queue depth one. A full job replaces whatever waits; an incremental job joins a waiting job so no
+    // appended point is lost. The active job, if any, is allowed to finish safely.
+    if (pending_dem_job_ && !job->full) {
+      pending_dem_job_->cloud->points.insert(
+        pending_dem_job_->cloud->points.end(), job->cloud->points.begin(), job->cloud->points.end());
+      pending_dem_job_->cloud->width = static_cast<uint32_t>(pending_dem_job_->cloud->points.size());
+      pending_dem_job_->revision = job->revision;
+      pending_dem_job_->stamp = job->stamp;
+      pending_dem_job_->write = pending_dem_job_->write || job->write;
+    } else {
+      pending_dem_job_ = std::move(job);
+    }
   }
   dem_worker_cv_.notify_one();
 }
@@ -516,12 +426,22 @@ publishes status, timing, and optional preview data.
 void GraphBasedSlamComponent::processDemJob(const DemJob & job)
 {
   const auto started = std::chrono::steady_clock::now();
-  publishDemStatus("busy", "rasterizing corrected map");
+  publishDemStatus("busy", job.full ? "rasterizing corrected map" : "adding new points to the DEM");
+  if (job.full) {
+    dem_cells_.clear();
+  }
+  const double res = dem_storage_resolution_m_;
+  if (res <= 0.0) {
+    throw std::runtime_error("invalid DEM resolution");
+  }
+  const std::size_t added = accumulateDemPoints(dem_cells_, *job.cloud, res);
+  if (dem_cells_.empty()) {
+    throw std::runtime_error("no finite points");
+  }
+  const std::size_t recomputed = refreshDemCells(dem_cells_, dem_min_points_per_cell_, dem_terrain_percentile_);
   DemGrid grid;
   std::string error;
-  if (!buildDemGrid(
-      *job.cloud, dem_storage_resolution_m_, dem_min_points_per_cell_,
-      dem_terrain_percentile_, dem_max_raster_cells_, grid, error)) {
+  if (!rasterizeDemCells(dem_cells_, res, dem_max_raster_cells_, grid, error)) {
     throw std::runtime_error(error);
   }
   interpolateSmallDemHoles(
@@ -531,6 +451,7 @@ void GraphBasedSlamComponent::processDemJob(const DemJob & job)
 
   const std::filesystem::path output_dir(dem_output_dir_);
   std::error_code ec;
+  if (job.write) {
   std::filesystem::create_directories(output_dir, ec);
   if (ec) {
     throw std::runtime_error("failed to create DEM output directory: " + ec.message());
@@ -604,6 +525,7 @@ void GraphBasedSlamComponent::processDemJob(const DemJob & job)
   if (ec) {
     throw std::runtime_error("failed to publish DEM metadata: " + ec.message());
   }
+  }  // job.write
 
   std::size_t valid_cells = 0;
   std::size_t interpolated_cells = 0;
@@ -664,7 +586,8 @@ void GraphBasedSlamComponent::processDemJob(const DemJob & job)
   const double elapsed_ms = std::chrono::duration<double, std::milli>(
     std::chrono::steady_clock::now() - started).count();
   std::ostringstream detail;
-  detail << "revision=" << job.revision << " points=" << job.cloud->size()
+  detail << "revision=" << job.revision << (job.full ? " full" : " incremental") << " points_added=" << added
+         << " cells=" << dem_cells_.size() << " recomputed=" << recomputed << (job.write ? " written" : "")
          << " valid_cells=" << valid_cells << " interpolated_cells=" << interpolated_cells
          << " raster=" << grid.width << "x" << grid.height
          << " elapsed_ms=" << std::fixed << std::setprecision(1) << elapsed_ms;

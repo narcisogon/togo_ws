@@ -22,7 +22,8 @@ reader = rosbag2_py.SequentialReader()
 reader.open(rosbag2_py.StorageOptions(uri=str(BAG), storage_id="mcap"),
             rosbag2_py.ConverterOptions(input_serialization_format="cdr", output_serialization_format="cdr"))
 types = {t.name: t.type for t in reader.get_all_topics_and_types()}
-want = {"/ground_truth/odom", "/husky/sensors/imu_0/data_raw", "/husky/sensors/seyond/points", "/clock"}
+want = {"/ground_truth/odom", "/husky/sensors/imu_0/data_raw", "/husky/sensors/seyond/points",
+        "/husky/sensors/ouster/points", "/clock"}   # the mast LiDAR, when the bag has it
 cls = {t: get_message(types[t]) for t in want if t in types}
 
 t_bag = defaultdict(list)          # bag receive time per topic (s)
@@ -45,7 +46,7 @@ while reader.has_next():
     elif topic == "/husky/sensors/imu_0/data_raw":
         a, w = m.linear_acceleration, m.angular_velocity
         imu.append((st, a.x, a.y, a.z, w.x, w.y, w.z))
-    elif topic == "/husky/sensors/seyond/points":
+    elif topic in ("/husky/sensors/seyond/points", "/husky/sensors/ouster/points"):
         lidar_finite.append((st, m.width * m.height))
 
 out = {"bag": str(BAG), "topics": {}}

@@ -177,6 +177,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     . /opt/ros/${ROS_DISTRO}/setup.bash && \
     rosdep install -iyr --from-paths src && \
     sudo apt-get install -q -y \
+        libceres-dev \
         libg2o-dev \
         libboost-all-dev \
         cmake

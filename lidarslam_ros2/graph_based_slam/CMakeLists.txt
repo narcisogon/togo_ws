@@ -135,6 +135,11 @@ if(BUILD_TESTING)
     target_include_directories(test_gnss_weighting PRIVATE include)
     ament_target_dependencies(test_gnss_weighting sensor_msgs)
   endif()
+  ament_add_gtest(test_dem_raster test/test_dem_raster.cpp)
+  if(TARGET test_dem_raster)
+    target_include_directories(test_dem_raster PRIVATE include ${PCL_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIR})
+    target_link_libraries(test_dem_raster ${PCL_LIBRARIES})
+  endif()
   ament_add_gtest(
     test_adjacent_edge_auto_scale
     test/test_adjacent_edge_auto_scale.cpp

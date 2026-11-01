@@ -287,6 +287,74 @@ TEST(HazardMapping, PartialInflationKeepsUnchangedHazardsOutsideTheUpdatedArea)
   EXPECT_EQ(map.state({15, 15})->raw, 100);
 }
 
+TEST(HazardMapping, GrowthKeepsCostsAndPricesNewCellsWithoutReinflating)
+{
+  for (const int unknown_cost : {-1, 50}) {
+    Config config; config.footprint_radius = 0; config.unknown_cost = unknown_cost;
+    auto all = project(plane(30), Eigen::Isometry3d::Identity(), Eigen::Vector3d::UnitZ(), config);
+    IncrementalGrid map; map.reset(config); map.update(all, 1); map.finish();
+    EXPECT_EQ(map.inflatedCells(), map.cells());
+    const std::size_t before = map.cells();
+    // A lone distant return grows the grid east without classifying anything: nothing to inflate.
+    Contribution lone; lone.emplace(Key{60, 0}, Cell{-0.3, Eigen::Vector3d::UnitZ(), 1, 0.0001});
+    map.update(lone, 2);
+    all.insert(lone.begin(), lone.end());
+    const auto grown = map.finish();
+    EXPECT_GT(map.cells(), before);
+    EXPECT_EQ(map.inflatedCells(), 0u);
+    auto full = grown; inflate(full, config);
+    EXPECT_EQ(grown.costs, full.costs);
+    expectSameGrid(grown, rasterize({&all}, config));
+    // Flat terrain beyond the east and the south edge in one batch: the grid grows on two sides and only
+    // the changed area is inflated, hazards at the former edge included.
+    auto east_points = plane(0); for (auto & p : east_points) {p.x() += 2.5;}
+    auto south_points = plane(0); for (auto & p : south_points) {p.y() -= 2.5;}
+    auto fresh = project(east_points, Eigen::Isometry3d::Identity(), Eigen::Vector3d::UnitZ(), config);
+    const auto south = project(south_points, Eigen::Isometry3d::Identity(), Eigen::Vector3d::UnitZ(), config);
+    fresh.insert(south.begin(), south.end());
+    map.update(fresh, 3);
+    all.insert(fresh.begin(), fresh.end());
+    const auto actual = map.finish();
+    EXPECT_GT(map.inflatedCells(), 0u);
+    EXPECT_LT(map.inflatedCells(), map.cells());
+    full = actual; inflate(full, config);
+    EXPECT_EQ(actual.costs, full.costs);
+    expectSameGrid(actual, rasterize({&all}, config));
+  }
+}
+
+TEST(HazardMapping, GrowMarginExtendsTheGridAheadOfTheObservation)
+{
+  Config config; config.footprint_radius = 0; config.grow_margin = 1.0;
+  const auto all = project(plane(30), Eigen::Isometry3d::Identity(), Eigen::Vector3d::UnitZ(), config);
+  IncrementalGrid map; map.reset(config); map.update(all, 1);
+  const auto initial = map.finish();
+  const auto reference = rasterize({&all}, config);
+  EXPECT_EQ(initial.width, reference.width);  // the first grid takes no margin
+  EXPECT_EQ(initial.height, reference.height);
+  const int padding = static_cast<int>(std::ceil((config.footprint_radius + config.soft_radius +
+    config.slope_radius) / config.resolution)) + 1;
+  const int margin = static_cast<int>(std::ceil(config.grow_margin / config.resolution));
+  // One cell east of the extent: the grid grows east by that cell, its padding and the margin.
+  const int east = initial.origin_x + static_cast<int>(initial.width);
+  Contribution lone; lone.emplace(Key{east, 0}, Cell{-0.3, Eigen::Vector3d::UnitZ(), 1, 0.0001});
+  map.update(lone, 2);
+  const auto grown = map.finish();
+  EXPECT_EQ(grown.origin_x, initial.origin_x);
+  EXPECT_EQ(grown.origin_y, initial.origin_y);
+  EXPECT_EQ(grown.height, initial.height);
+  EXPECT_EQ(static_cast<int>(grown.width), static_cast<int>(initial.width) + 1 + padding + margin);
+  // A return inside the margin changes nothing about the extent.
+  Contribution inside; inside.emplace(Key{east + margin / 2, 0}, Cell{-0.3, Eigen::Vector3d::UnitZ(), 1, 0.0001});
+  map.update(inside, 3);
+  const auto same = map.finish();
+  EXPECT_EQ(same.width, grown.width);
+  EXPECT_EQ(same.height, grown.height);
+  auto full = same; inflate(full, config);
+  EXPECT_EQ(same.costs, full.costs);
+  EXPECT_EQ(map.inflatedCells(), 0u);
+}
+
 namespace
 {
 Contribution measurement(double degrees, double variance = 0.000025)

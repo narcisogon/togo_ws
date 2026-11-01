@@ -3,6 +3,11 @@ set -eo pipefail
 
 source /opt/ros/jazzy/setup.bash
 source /home/er4-user/slam_ws/install/setup.bash
+if [[ -n "${SLAM_OVERLAY_SETUP:-}" ]]; then   # A/B of builds: a package built elsewhere replaces the workspace one
+  [[ -f "$SLAM_OVERLAY_SETUP" ]] || { echo "ERROR: SLAM_OVERLAY_SETUP not found: $SLAM_OVERLAY_SETUP" >&2; exit 2; }
+  source "$SLAM_OVERLAY_SETUP"
+  echo "[run_live] overlay sourced: $SLAM_OVERLAY_SETUP"
+fi
 
 set -u
 
@@ -24,6 +29,13 @@ ODOM_FRAME=${ODOM_FRAME:-odom}
 # ── Behaviour flags ─────────────────────────────────────────────────────────────
 ENABLE_MAP_SAVE_PULSE=${ENABLE_MAP_SAVE_PULSE:-false}
 SLAM_RVIZ=${SLAM_RVIZ:-true}
+SLAM_VIO=${SLAM_VIO:-false}            # true: OpenVINS on the stereo rig too (lunar_world_gen replay --vio)
+SLAM_VIO_CONFIG=${SLAM_VIO_CONFIG:-}   # its estimator_config.yaml (container path); empty = the launch default
+SLAM_TEXTURE_MAP=${SLAM_TEXTURE_MAP:-false}   # true: the backend colours the keyframes from the left camera (/modified_map_colored)
+SLAM_HAZARD=${SLAM_HAZARD:-true}       # false: no hazard mapping (map only)
+SLAM_FRONTEND_MAP=${SLAM_FRONTEND_MAP:-false}   # true: dlio_map_node too (the frontend map /dlio/map; nothing here reads it)
+SLAM_OVERLAY_SETUP=${SLAM_OVERLAY_SETUP:-}      # optional: a ROS overlay setup.bash sourced after the SLAM workspace (a package built elsewhere, e.g. DLIO as committed, replaces the workspace's one: A/B of builds)
+SLAM_GOMP_SPINCOUNT=${SLAM_GOMP_SPINCOUNT:-300000}   # OpenMP spin budget for the SLAM nodes (0 = passive waiting)
 TIMED_CLOUD_SCAN_PERIOD=${TIMED_CLOUD_SCAN_PERIOD:-0.0666666667}
 TIMED_CLOUD_REVERSE_COLUMNS=${TIMED_CLOUD_REVERSE_COLUMNS:-false}
 DLIO_DESKEW=${DLIO_DESKEW:-true}
@@ -108,6 +120,7 @@ echo "  IMU    frame : $IMU_FRAME"
 echo "  Base   frame : $BASE_FRAME"
 echo "  Odom   frame : $ODOM_FRAME"
 echo "  Deskew       : $DLIO_DESKEW"
+echo "  VIO          : $SLAM_VIO ${SLAM_VIO_CONFIG:+($SLAM_VIO_CONFIG)}"
 echo "──────────────────────────────────────────────"
 
 # ── Launch in background so we own the PID ─────────────────────────────────────
@@ -127,7 +140,13 @@ ros2 launch "$LAUNCH_FILE" \
   imu_frame:="$IMU_FRAME" \
   base_frame:="$BASE_FRAME" \
   odom_frame:="$ODOM_FRAME" \
-  rviz:="$SLAM_RVIZ" &
+  rviz:="$SLAM_RVIZ" \
+  vio:="$SLAM_VIO" \
+  texture_map:="$SLAM_TEXTURE_MAP" \
+  hazard:="$SLAM_HAZARD" \
+  frontend_map:="$SLAM_FRONTEND_MAP" \
+  gomp_spincount:="$SLAM_GOMP_SPINCOUNT" \
+  ${SLAM_VIO_CONFIG:+vio_config:=$SLAM_VIO_CONFIG} &
 
 LAUNCH_PID=$!
 echo "[slam_launch] ros2 launch PID: $LAUNCH_PID"

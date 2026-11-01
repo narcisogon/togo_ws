@@ -19,7 +19,7 @@ void Config::validate() const
     terrain_percentile, height_noise, min_plane_coverage, max_plane_error, clear_slope_margin,
     obstacle_min_height, obstacle_max_height, obstacle_voxel_height, obstacle_hit_probability,
     obstacle_miss_probability, obstacle_mark_probability, obstacle_clear_probability,
-    obstacle_max_probability};
+    obstacle_max_probability, grow_margin};
   for (double value : values) {
     if (!std::isfinite(value)) {throw std::invalid_argument("hazard values must be finite");}
   }
@@ -40,7 +40,7 @@ void Config::validate() const
     obstacle_hit_probability >= 1 || obstacle_miss_probability <= 0 ||
     obstacle_miss_probability >= 0.5 || max_rays < 1 || max_rays > 20000 ||
     max_obstacle_voxels < 1 || max_obstacle_voxels > 4000000 ||
-    fit_threads < 0 || fit_threads > 256)
+    fit_threads < 0 || fit_threads > 256 || grow_margin < 0.0)
   {
     throw std::invalid_argument("invalid hazard configuration: require valid height/range, "
       "0 < slope < 90, 0 <= lethal radius < soft radius, and positive support/budget");
@@ -368,26 +368,38 @@ void IncrementalGrid::extend(const Contribution & observation)
   const int padding = static_cast<int>(std::ceil((config_.footprint_radius +
     config_.soft_radius + config_.slope_radius) / config_.resolution)) + 1;
   min_x -= padding; max_x += padding; min_y -= padding; max_y += padding;
-  if (observed_cells_ > 0 || !obstacles_.empty()) {
-    min_x = std::min(min_x, grid_.origin_x);
-    min_y = std::min(min_y, grid_.origin_y);
-    max_x = std::max(max_x, grid_.origin_x + static_cast<int>(grid_.width) - 1);
-    max_y = std::max(max_y, grid_.origin_y + static_cast<int>(grid_.height) - 1);
-    if (min_x == grid_.origin_x && min_y == grid_.origin_y &&
-      max_x == grid_.origin_x + static_cast<int>(grid_.width) - 1 &&
-      max_y == grid_.origin_y + static_cast<int>(grid_.height) - 1) {return;}
+  const bool carry = observed_cells_ > 0 || !obstacles_.empty();
+  if (carry) {
+    const int grid_x0 = grid_.origin_x, grid_y0 = grid_.origin_y;
+    const int grid_x1 = grid_.origin_x + static_cast<int>(grid_.width) - 1;
+    const int grid_y1 = grid_.origin_y + static_cast<int>(grid_.height) - 1;
+    if (min_x >= grid_x0 && min_y >= grid_y0 && max_x <= grid_x1 && max_y <= grid_y1) {return;}
+    // A side that grows takes the margin as well (see Config::grow_margin).
+    const int margin = static_cast<int>(std::ceil(config_.grow_margin / config_.resolution));
+    if (min_x < grid_x0) {min_x -= margin;}
+    if (max_x > grid_x1) {max_x += margin;}
+    if (min_y < grid_y0) {min_y -= margin;}
+    if (max_y > grid_y1) {max_y += margin;}
+    min_x = std::min(min_x, grid_x0); min_y = std::min(min_y, grid_y0);
+    max_x = std::max(max_x, grid_x1); max_y = std::max(max_y, grid_y1);
   }
   Grid next;
   next.origin_x = min_x; next.origin_y = min_y; next.resolution = config_.resolution;
   next.width = max_x - min_x + 1; next.height = max_y - min_y + 1;
   const auto size = static_cast<std::size_t>(next.width) * next.height;
   if (size > config_.max_cells) {throw std::runtime_error("hazard grid exceeds max_cells");}
-  next.raw.assign(size, -1); next.costs.assign(size, -1);
+  // The cells the grid gains are unknown and beyond the reach of every hazard: a hazard is always an
+  // observed cell or an obstacle column, inside the padded extent, and the padding covers the slope
+  // radius on top of the inflation radii. Their planning cost is therefore the unknown cost, and the
+  // carried cells keep theirs (no hazard was added, so no cell's nearest hazard changed). Growth copies
+  // the grid and inflates nothing; until 2026-11-01 every growth re-inflated the whole grid.
+  const auto unknown = static_cast<std::int8_t>(config_.unknown_cost >= 0 ? config_.unknown_cost : -1);
+  next.raw.assign(size, -1); next.costs.assign(size, unknown);
   next.slope_deg.assign(size, std::numeric_limits<float>::quiet_NaN());
   std::vector<TerrainState> terrain(size);
   std::vector<int64_t> fresh_stamps(size, std::numeric_limits<int64_t>::min());
   std::vector<std::uint8_t> dirty(size, 0);
-  if (observed_cells_ > 0 || !obstacles_.empty()) {
+  if (carry) {
     for (std::uint32_t y = 0; y < grid_.height; ++y) {
       const auto old = static_cast<std::size_t>(y) * grid_.width;
       const auto dst = static_cast<std::size_t>(grid_.origin_y + y - min_y) * next.width +
@@ -402,7 +414,7 @@ void IncrementalGrid::extend(const Contribution & observation)
   }
   grid_ = std::move(next); terrain_ = std::move(terrain);
   fresh_stamps_ = std::move(fresh_stamps); dirty_ = std::move(dirty);
-  full_inflation_ = true;
+  if (!carry) {full_inflation_ = true;}
 }
 
 const TerrainState * IncrementalGrid::state(const Key & key) const

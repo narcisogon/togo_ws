@@ -131,6 +131,24 @@ public:
     return dx;
   }
 
+  // The plain Kalman update from any linear measurement of the error state: nu = z - h(x) (M), H = dh/dx (M x 15),
+  // R the measurement covariance. Returns the correction of all 15 states, updates P (Joseph form), writes the
+  // normalised innovation squared to nis (chi-square with M degrees of freedom).
+  template <int M>
+  Vec15 update(const Eigen::Matrix<double, M, 15>& H, const Eigen::Matrix<double, M, 1>& nu,
+               const Eigen::Matrix<double, M, M>& R, double& nis) {
+    Eigen::Matrix<double, M, M> S = H * P_ * H.transpose() + R;
+    S = (0.5 * (S + S.transpose())).eval();
+    const Eigen::Matrix<double, M, M> S_inv = S.ldlt().solve(Eigen::Matrix<double, M, M>::Identity());
+    nis = nu.dot(S_inv * nu);
+    const Eigen::Matrix<double, 15, M> K = P_ * H.transpose() * S_inv;
+    const Vec15 dx = K * nu;
+    const Mat15 IKH = Mat15::Identity() - K * H;
+    Mat15 P = IKH * P_ * IKH.transpose() + K * R * K.transpose();
+    P_ = (0.5 * (P + P.transpose())).eval();
+    return dx;
+  }
+
 private:
   Mat15 P_;
   Noise noise_;

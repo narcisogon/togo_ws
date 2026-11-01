@@ -11,6 +11,7 @@ RUNS="${HOME}/togo_assets/lunar/bags/slam_runs"
 LABEL=""
 CONFIG=""
 BAG=""
+VIO_ARGS=()
 REPEATS=3
 COMPARE=""
 PAUSE=10
@@ -43,6 +44,8 @@ while [[ $# -gt 0 ]]; do
     --label) need "$@"; LABEL="$2"; shift 2 ;;
     --config) need "$@"; CONFIG="$2"; shift 2 ;;
     --bag) need "$@"; BAG="$2"; shift 2 ;;
+    --vio) VIO_ARGS+=(--vio); shift ;;
+    --vio-config) need "$@"; VIO_ARGS+=(--vio-config "$2"); shift 2 ;;
     --repeats) need "$@"; [[ "$2" =~ ^[1-9][0-9]*$ ]] || die "--repeats must be a positive integer"; REPEATS="$2"; shift 2 ;;
     --compare-to) need "$@"; COMPARE="$2"; shift 2 ;;
     --pause) need "$@"; [[ "$2" =~ ^[0-9]+$ ]] || die "--pause must be whole seconds"; PAUSE="$2"; shift 2 ;;
@@ -57,6 +60,7 @@ done
 ARGS=(--label "${LABEL}" --no-rviz --no-truth-path)
 [[ -n "${CONFIG}" ]] && ARGS+=(--config "${CONFIG}")
 [[ -n "${BAG}" ]] && ARGS+=(--bag "${BAG}")
+ARGS+=("${VIO_ARGS[@]}")
 trap 'echo; echo "Benchmark interrupted."; exit 130' INT TERM
 
 ok=0

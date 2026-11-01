@@ -1,0 +1,37 @@
+%YAML:1.0
+# The stereo rig's cameras in the rig's own IMU frame (togo_description/urdf/stereo_vio_rig.urdf.xacro, printed
+# by tools/urdf_frame_offset.py on the assembled model) - both optical frames look along the rig's +x pitched
+# down by 20 deg (camera_pitch 0.3490659 rad, since 2026-10-31 evening - level cameras saw mostly sky at the slope
+# waypoint and the VIO lost every feature), left at +0.10 m, right at -0.10 m (baseline 0.20 m).
+# T_imu_cam = [R_CtoI | p_CinI] with R_CtoI = [0 -s c; -1 0 0; 0 -c -s], s = sin 20 deg = 0.342020,
+# c = cos 20 deg = 0.939693. Pinhole, no distortion; 640x480 with a 90 deg horizontal field of view -
+# f = 320 / tan(45 deg) = 320 px. The principal point is the one the simulation's CameraInfo reports (checked
+# with record_bag.sh --check-sensors). The imu_0 variant is kalibr_imucam_chain_imu0.yaml (level cameras of the
+# 2026-10-31 afternoon bags, in imu_0).
+
+cam0:
+  T_imu_cam:
+    - [0.0,  -0.342020, 0.939693,  0.0]
+    - [-1.0,  0.0,      0.0,       0.10]
+    - [0.0,  -0.939693, -0.342020, 0.0]
+    - [0.0,   0.0,      0.0,       1.0]
+  cam_overlaps: [1]
+  camera_model: pinhole
+  distortion_coeffs: [0.0, 0.0, 0.0, 0.0]
+  distortion_model: radtan
+  intrinsics: [320.0, 320.0, 320.0, 240.0] #fu, fv, cu, cv
+  resolution: [640, 480]
+  rostopic: /husky/sensors/stereo_rig/left/image_raw
+cam1:
+  T_imu_cam:
+    - [0.0,  -0.342020, 0.939693,  0.0]
+    - [-1.0,  0.0,      0.0,      -0.10]
+    - [0.0,  -0.939693, -0.342020, 0.0]
+    - [0.0,   0.0,      0.0,       1.0]
+  cam_overlaps: [0]
+  camera_model: pinhole
+  distortion_coeffs: [0.0, 0.0, 0.0, 0.0]
+  distortion_model: radtan
+  intrinsics: [320.0, 320.0, 320.0, 240.0] #fu, fv, cu, cv
+  resolution: [640, 480]
+  rostopic: /husky/sensors/stereo_rig/right/image_raw

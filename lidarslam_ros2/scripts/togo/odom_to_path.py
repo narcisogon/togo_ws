@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections import deque
 import math
+import signal
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
@@ -91,8 +92,15 @@ class OdomToPath(Node):
         self.dirty = False
 
 
+def _terminate(*_) -> None:
+    # SIGTERM ends the spin the way SIGINT does. ros2 launch sends SIGINT, then SIGTERM; a helper that only
+    # answered SIGINT outlived its launch (three were found spinning at 10 % of a core each, 2026-11-01).
+    raise KeyboardInterrupt
+
+
 def main() -> None:
     rclpy.init()
+    signal.signal(signal.SIGTERM, _terminate)
     node = OdomToPath()
     try:
         rclpy.spin(node)

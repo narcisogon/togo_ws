@@ -1,0 +1,18 @@
+{
+  "_about": [
+    "Resource budget of a SLAM replay (tools/slam_budget.py), checked after every scored run of replay_slam_bag.sh.",
+    "Limits sit well above the measured defaults of 2026-11-01 (label round6: one lap of apollo16_stereo3_lap1, 12 hardware",
+    "threads, no RViz): all SLAM processes 146 % CPU and 1.7 GB, the backend 63 %, DLIO 42 ms CPU per scan, hazard updates",
+    "58 ms mean / 103 ms p95 with no dropped scan, GICP 4.9 ms. Only a real regression trips them; slam_compare.py is the finer judge.",
+    "Keys are dotted paths into metrics.json; a key the run lacks (no hazard block with --no-hazard) is n/a, not a failure."
+  ],
+  "limits": [
+    {"key": "resources.total_cpu_pct_mean", "max": 260, "name": "all SLAM processes, CPU", "unit": "%"},
+    {"key": "resources.total_rss_peak_mb", "max": 2600, "name": "all SLAM processes, RAM peak", "unit": "MB"},
+    {"key": "resources.dlio_cpu_ms_per_scan", "max": 60, "name": "DLIO CPU time per scan", "unit": "ms"},
+    {"key": "resources.processes.graph_based_slam_node.cpu_pct_mean", "max": 120, "name": "graph backend CPU", "unit": "%"},
+    {"key": "scan_matching.gicp_ms.mean", "max": 12, "name": "GICP solve time, mean", "unit": "ms"},
+    {"key": "hazard.dropped_clouds", "max": 0, "name": "hazard clouds dropped", "unit": ""},
+    {"key": "hazard.update_ms.p95", "max": 300, "name": "hazard map update, p95", "unit": "ms"}
+  ]
+}

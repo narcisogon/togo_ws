@@ -82,6 +82,9 @@ private:
     double max_age {1.0};
     double update_period {0.2};
     int batch_clouds {3};
+    double input_rate_hz {0.0};             // hazard/input_rate_hz: scans taken per second (0 = every scan)
+    std::int64_t last_accepted_stamp_ns {0};
+    std::uint64_t skipped_clouds {0};       // scans not taken because of input_rate_hz (not drops)
     std::uint64_t config_revision {0};
     std::uint64_t graph_revision {0};
     std::uint64_t geometry_revision {0};

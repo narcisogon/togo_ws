@@ -1,6 +1,14 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
+  <!-- lidar360 (2026-11-01, the mast test): a 360-degree LiDAR, the Ouster OS1-64 model of
+       clearpath_sensors_description (1024 x 64 rays, 360 x 42.4 deg, 20 Hz), on a mast standing at the centre of
+       the sensor arch's top, in addition to the front Seyond. Off by default; the simulation launcher passes
+       extra_xacro_args:="lidar360:=true lidar360_mast:=0.40" (mast length in m). Its cloud is bridged to
+       /husky/sensors/ouster/points (togo_gz/config/bridge.yaml); the sensor frame is lidar360_0_sensor_link. -->
+  <xacro:arg name="lidar360" default="false"/>
+  <xacro:arg name="lidar360_mast" default="0.40"/>
+
   <xacro:macro name="togo">
 
   <!-- Common -->
@@ -66,6 +74,45 @@
   <xacro:seyond_lidar name="lidar3d_0" parent_link="enclosure_front_lidar_mount" ang_res_h="0.01" ang_res_v="0.01" min_ang_h="-1.0471975511965976" max_ang_h="1.0471975511965976" min_ang_v="-0.6108652381980153" max_ang_v="0.6108652381980153" min_range="0.1" max_range="150.0" update_rate="20">
     <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
   </xacro:seyond_lidar>
+
+  <!-- lidar360_0: the mast and the 360-degree LiDAR on it (see the arguments at the top of this file) -->
+  <xacro:if value="$(arg lidar360)">
+    <xacro:property name="lidar360_mast" value="$(arg lidar360_mast)"/>
+    <xacro:property name="lidar360_mast_radius" value="0.025"/>
+    <xacro:include filename="$(find clearpath_sensors_description)/urdf/ouster_os1.urdf.xacro"/>
+    <link name="lidar360_mast_link">
+      <inertial>
+        <mass value="0.5"/>
+        <origin xyz="0 0 ${lidar360_mast / 2}"/>
+        <inertia ixx="${0.5 / 12 * (3 * lidar360_mast_radius**2 + lidar360_mast**2)}" ixy="0" ixz="0"
+                 iyy="${0.5 / 12 * (3 * lidar360_mast_radius**2 + lidar360_mast**2)}" iyz="0"
+                 izz="${0.5 / 2 * lidar360_mast_radius**2}"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 ${lidar360_mast / 2}"/>
+        <geometry><cylinder radius="${lidar360_mast_radius}" length="${lidar360_mast}"/></geometry>
+        <material name="lidar360_mast_grey"><color rgba="0.4 0.4 0.4 1.0"/></material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 ${lidar360_mast / 2}"/>
+        <geometry><cylinder radius="${lidar360_mast_radius}" length="${lidar360_mast}"/></geometry>
+      </collision>
+    </link>
+    <joint name="lidar360_mast_joint" type="fixed">
+      <parent link="sensor_arch_link"/>
+      <child link="lidar360_mast_link"/>
+      <origin xyz="0 0 0.44536" rpy="0 0 0"/>   <!-- the centre of the arch's top plane -->
+    </joint>
+    <link name="lidar360_mast_top"/>
+    <joint name="lidar360_mast_top_joint" type="fixed">
+      <parent link="lidar360_mast_link"/>
+      <child link="lidar360_mast_top"/>
+      <origin xyz="0 0 ${lidar360_mast}" rpy="0 0 0"/>
+    </joint>
+    <xacro:ouster_os1 name="lidar360_0" parent_link="lidar360_mast_top" update_rate="20" min_range="0.3" max_range="150.0">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:ouster_os1>
+  </xacro:if>
   -->
 
 <!-- Test - CPU LiDAR ->
@@ -116,6 +163,13 @@
   <xacro:phidgets_spatial name="imu_0" parent_link="base_link">
     <origin xyz="0.059 0.0 0.161275" rpy="0.0 0.0 0.0"/>
   </xacro:phidgets_spatial>
+  <!-- stereo_rig: generic global-shutter stereo pair (20 cm baseline, 90 deg HFOV, 640x480 mono, 20 fps) with its own
+       400 Hz IMU, for visual-inertial odometry. On a front bracket above the LiDAR, level, looking forward: the
+       arch's camera mount sits 0.33 m behind the base origin, where the enclosure fills the bottom of the view -->
+  <xacro:include filename="$(find togo_description)/urdf/stereo_vio_rig.urdf.xacro"/>
+  <xacro:stereo_vio_rig name="stereo_rig" parent_link="base_link">
+    <origin xyz="0.45 0.0 0.50" rpy="0.0 0.0 0.0"/>
+  </xacro:stereo_vio_rig>
 
   <!-- ins_0 -->
   <xacro:include filename="$(find clearpath_sensors_description)/urdf/fixposition.urdf.xacro"/>

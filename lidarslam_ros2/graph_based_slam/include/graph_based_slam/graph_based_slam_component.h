@@ -118,12 +118,15 @@ extern "C" {
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/empty.hpp>
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_sensor_msgs/tf2_sensor_msgs.hpp>
 
+#include "graph_based_slam/dem_raster.hpp"
 #include "graph_based_slam/gnss_weighting.hpp"
 #include "graph_based_slam/scan_context.hpp"
 #include "graph_based_slam/solid_descriptor.hpp"
@@ -224,6 +227,60 @@ namespace hazard {class Worker;}
       point.y = static_cast<float>(y * inverse_count);
       point.z = static_cast<float>(z * inverse_count);
       point.intensity = static_cast<float>(intensity * inverse_count);
+      point.time = newest_time;
+      point.submap_index = newest_submap_index;
+      return point;
+    }
+  };
+
+  // A point of the coloured map (texture/enabled): the timed record plus a packed rgb (gray from the camera)
+  struct ColorMapPoint  // NOLINT(runtime/indentation_namespace)
+  {
+    float x {0.0F};
+    float y {0.0F};
+    float z {0.0F};
+    float rgb {0.0F};          // PCL packing: the uint32 0x00RRGGBB reinterpreted as a float
+    float intensity {0.0F};
+    double time {0.0};
+    uint32_t submap_index {0U};
+  };
+
+  struct ColorVoxelAccumulator  // NOLINT(runtime/indentation_namespace)
+  {
+    double x {0.0};
+    double y {0.0};
+    double z {0.0};
+    double intensity {0.0};
+    double gray {0.0};
+    double newest_time {-std::numeric_limits<double>::infinity()};
+    uint32_t newest_submap_index {0U};
+    int count {0};
+
+    void add(const pcl::PointXYZI & point, uint8_t gray_value, double time, uint32_t submap_index)
+    {
+      x += point.x;
+      y += point.y;
+      z += point.z;
+      intensity += point.intensity;
+      gray += gray_value;
+      if (time >= newest_time) {
+        newest_time = time;
+        newest_submap_index = submap_index;
+      }
+      ++count;
+    }
+
+    ColorMapPoint centroid() const
+    {
+      ColorMapPoint point;
+      const double inverse_count = count > 0 ? 1.0 / static_cast<double>(count) : 0.0;
+      point.x = static_cast<float>(x * inverse_count);
+      point.y = static_cast<float>(y * inverse_count);
+      point.z = static_cast<float>(z * inverse_count);
+      point.intensity = static_cast<float>(intensity * inverse_count);
+      const uint32_t g = static_cast<uint32_t>(std::min(255.0, std::max(0.0, gray * inverse_count + 0.5)));
+      const uint32_t packed = (g << 16) | (g << 8) | g;
+      std::memcpy(&point.rgb, &packed, sizeof(float));
       point.time = newest_time;
       point.submap_index = newest_submap_index;
       return point;
@@ -425,10 +482,21 @@ private:
     // optional preview publication never execute in a backend critical path.
     struct DemJob
     {
-      pcl::PointCloud < pcl::PointXYZI > ::ConstPtr cloud;
+      pcl::PointCloud < pcl::PointXYZI > ::Ptr cloud;   // the points to add; every point when full
       uint64_t revision {0};
       rclcpp::Time stamp {0, 0, RCL_ROS_TIME};
+      bool full {true};      // start the accumulator over with these points (the assembled map was rebuilt)
+      bool write {true};     // write the rasters to disk (every dem/write_period_sec, always on a save)
     };
+    // Incremental DEM (dem_raster.hpp): per cell the heights seen so far and their statistics. Owned by the
+    // DEM worker thread; jobs bring only the points appended to the assembled map since the previous job.
+    DemCells dem_cells_;
+    std::size_t dem_points_sent_ {0};        // points of assembled_map_cloud_ already handed to the DEM
+    bool dem_full_pending_ {true};           // the next DEM job starts over (the assembled map was rebuilt)
+    double dem_write_period_sec_ {60.0};
+    std::chrono::steady_clock::time_point dem_last_write_time_ {};
+    double modified_map_timed_min_interval_sec_ {5.0};
+    std::chrono::steady_clock::time_point last_timed_map_publish_time_ {};
     bool dem_enabled_ {false};
     double dem_update_period_sec_ {10.0};
     double dem_storage_resolution_m_ {0.10};
@@ -862,6 +930,30 @@ private:
       TimedVoxelKey, TimedVoxelAccumulator, TimedVoxelKeyHash > assembled_timed_voxels_;
     std::size_t assembled_timed_input_point_count_ {0};
     double assembled_timed_voxel_leaf_size_ {-1.0};
+    // Textured map (texture/enabled): the left camera's gray per keyframe point, voxelised with the pose graph
+    bool texture_enabled_ {false};
+    std::string texture_camera_frame_ {"stereo_rig_left_camera_optical_frame"};
+    double texture_max_image_age_s_ {0.03};
+    double texture_leaf_size_ {0.10};
+    int texture_depth_cell_px_ {4};
+    double texture_depth_tolerance_m_ {0.3};
+    double texture_image_buffer_s_ {3.0};
+    struct TextureImage { double stamp; uint32_t width; uint32_t height; uint32_t step; std::vector<uint8_t> data; };
+    std::deque<TextureImage> texture_images_;           // the last texture_image_buffer_s_ of left images, under texture_mtx_
+    mutable std::mutex texture_mtx_;
+    bool texture_intrinsics_valid_ {false};
+    double texture_fx_ {0.0}, texture_fy_ {0.0}, texture_cx_ {0.0}, texture_cy_ {0.0};
+    uint32_t texture_image_width_ {0}, texture_image_height_ {0};
+    bool texture_extrinsics_valid_ {false};
+    Eigen::Isometry3d texture_T_cam_base_ {Eigen::Isometry3d::Identity()};   // base_link -> camera optical
+    std::vector<std::vector<uint16_t>> submap_gray_;    // per submap, per point: gray + 1 (0 = not seen), under mtx_
+    std::size_t texture_submaps_coloured_ {0};
+    std::size_t texture_submaps_without_image_ {0};
+    std::unordered_map<TimedVoxelKey, ColorVoxelAccumulator, TimedVoxelKeyHash> assembled_color_voxels_;
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr modified_map_colored_pub_;
+    sensor_msgs::msg::PointCloud2 cached_modified_map_colored_msg_;
     lidarslam_msgs::msg::MapArray assembled_map_array_msg_;
     nav_msgs::msg::Path assembled_path_msg_;
     std::vector < Eigen::Isometry3d > assembled_submap_poses_;
@@ -894,6 +986,32 @@ private:
     void tryCreateSubmap();
     nav_msgs::msg::Odometry latest_odom_;
     bool latest_odom_valid_ {false};
+    // VIO (OpenVINS) poses as a second between-constraint on adjacent submaps (use_vio_edge). The VIO's frame is
+    // its own, so only relative poses between submap stamps are used, brought from the rig's IMU to base_link.
+    bool use_vio_edge_ {false};
+    double vio_edge_info_weight_trans_ {400.0};
+    double vio_edge_info_weight_rot_ {10000.0};
+    bool vio_edge_auto_scale_ {false};
+    double vio_edge_auto_scale_target_nis_ {3.0};
+    double vio_edge_max_stamp_gap_s_ {0.15};
+    double vio_edge_frame_jump_m_ {0.5};       // a position jump above this between consecutive VIO messages = a restarted VIO
+    std::size_t vio_frame_resets_ {0};
+    double vio_edge_max_speed_mps_ {2.0};      // a relative pose implying more than this is a diverged VIO: no edge
+    std::size_t vio_edges_skipped_implausible_ {0};
+    Eigen::Isometry3d vio_T_base_rig_ {Eigen::Isometry3d::Identity()};   // the rig's IMU in base_link
+    struct VioPose { double stamp; Eigen::Isometry3d pose; };            // base_link in the VIO's frame
+    std::vector<VioPose> vio_buffer_;
+    mutable std::mutex vio_mtx_;
+    rclcpp::Subscription < nav_msgs::msg::Odometry > ::SharedPtr vio_sub_;
+    std::size_t vio_edges_added_ {0};
+    void receiveVio(const nav_msgs::msg::Odometry & msg);
+    bool vioBasePoseAt(double stamp, Eigen::Isometry3d & out) const;
+    void receiveImage(const sensor_msgs::msg::Image::SharedPtr msg);
+    void receiveCameraInfo(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
+    bool textureExtrinsics(const std::string & base_frame);
+    std::vector<uint16_t> colorizeSubmap(
+      const pcl::PointCloud<pcl::PointXYZI> & local_cloud, const rclcpp::Time & stamp,
+      const std::string & base_frame);
     rclcpp::Time latest_cloud_stamp_ {0, 0, RCL_ROS_TIME};
 
     // GNSS constraints for georeferenced mapping

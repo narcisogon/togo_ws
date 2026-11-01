@@ -1,0 +1,40 @@
+%YAML:1.0
+# The stereo rig's own IMU (togo_description/urdf/stereo_vio_rig.urdf.xacro) - 400 Hz, MEMS-grade white noise at
+# the densities below, no bias (the 2026-10-31 bag's Gazebo dynamic-bias model put a 0.3 m/s^2 offset on it, so
+# that bag was run on imu_0 - kalibr_imu_chain_imu0.yaml keeps that variant). It sits at the bar's centre with
+# the rig's axes (x forward, y left, z up), which are base_link's.
+
+imu0:
+  T_i_b:
+    - [1.0, 0.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+  accelerometer_noise_density: 2.0e-3   # [ m / s^2 / sqrt(Hz) ]
+  accelerometer_random_walk: 3.0e-3     # [ m / s^3 / sqrt(Hz) ]
+  gyroscope_noise_density: 1.7e-4       # [ rad / s / sqrt(Hz) ]
+  gyroscope_random_walk: 1.9e-5         # [ rad / s^2 / sqrt(Hz) ]
+  rostopic: /husky/sensors/stereo_rig/imu/data_raw
+  time_offset: 0.0
+  update_rate: 400.0
+  model: "kalibr"
+  Tw:
+    - [ 1.0, 0.0, 0.0 ]
+    - [ 0.0, 1.0, 0.0 ]
+    - [ 0.0, 0.0, 1.0 ]
+  R_IMUtoGYRO:
+    - [ 1.0, 0.0, 0.0 ]
+    - [ 0.0, 1.0, 0.0 ]
+    - [ 0.0, 0.0, 1.0 ]
+  Ta:
+    - [ 1.0, 0.0, 0.0 ]
+    - [ 0.0, 1.0, 0.0 ]
+    - [ 0.0, 0.0, 1.0 ]
+  R_IMUtoACC:
+    - [ 1.0, 0.0, 0.0 ]
+    - [ 0.0, 1.0, 0.0 ]
+    - [ 0.0, 0.0, 1.0 ]
+  Tg:
+    - [ 0.0, 0.0, 0.0 ]
+    - [ 0.0, 0.0, 0.0 ]
+    - [ 0.0, 0.0, 0.0 ]

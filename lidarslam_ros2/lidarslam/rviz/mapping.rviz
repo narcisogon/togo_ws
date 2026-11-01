@@ -380,6 +380,39 @@ Visualization Manager:
       Use Fixed Frame: true
       Use rainbow: true
       Value: false
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 0.08022062480449677
+        Min Value: -0.3410923480987549
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: RGB8
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 120
+      Min Color: 0; 0; 0
+      Min Intensity: 0
+      Name: ColoredMap
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.07
+      Style: Flat Squares
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /modified_map_colored
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: false
     - Alpha: 0.699999988079071
       Binary representation: false
       Binary threshold: 100

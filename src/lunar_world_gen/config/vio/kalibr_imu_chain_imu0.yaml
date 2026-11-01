@@ -1,0 +1,39 @@
+%YAML:1.0
+# The VIO's IMU is the rover's imu_0 (base_link-aligned at (0.059, 0, 0.161) m, 100 Hz, ideal in the simulation).
+# The rig's own IMU in apollo16_stereo_20261031 carries a 0.3 m/s^2 bias from Gazebo's dynamic-bias noise model
+# and is not usable; the densities below are MEMS-typical placeholders (the simulated imu_0 is better than them).
+
+imu0:
+  T_i_b:
+    - [1.0, 0.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+  accelerometer_noise_density: 2.0e-3   # [ m / s^2 / sqrt(Hz) ]
+  accelerometer_random_walk: 3.0e-3     # [ m / s^3 / sqrt(Hz) ]
+  gyroscope_noise_density: 1.7e-4       # [ rad / s / sqrt(Hz) ]
+  gyroscope_random_walk: 1.9e-5         # [ rad / s^2 / sqrt(Hz) ]
+  rostopic: /husky/sensors/imu_0/data_raw
+  time_offset: 0.0
+  update_rate: 100.0
+  model: "kalibr"
+  Tw:
+    - [ 1.0, 0.0, 0.0 ]
+    - [ 0.0, 1.0, 0.0 ]
+    - [ 0.0, 0.0, 1.0 ]
+  R_IMUtoGYRO:
+    - [ 1.0, 0.0, 0.0 ]
+    - [ 0.0, 1.0, 0.0 ]
+    - [ 0.0, 0.0, 1.0 ]
+  Ta:
+    - [ 1.0, 0.0, 0.0 ]
+    - [ 0.0, 1.0, 0.0 ]
+    - [ 0.0, 0.0, 1.0 ]
+  R_IMUtoACC:
+    - [ 1.0, 0.0, 0.0 ]
+    - [ 0.0, 1.0, 0.0 ]
+    - [ 0.0, 0.0, 1.0 ]
+  Tg:
+    - [ 0.0, 0.0, 0.0 ]
+    - [ 0.0, 0.0, 0.0 ]
+    - [ 0.0, 0.0, 0.0 ]

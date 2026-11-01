@@ -315,6 +315,11 @@ private:
   const State& publishedState() const {
     return (this->iekf_output_ && this->fstate_synced_) ? this->fstate_ : this->state;
   }
+  // the correction of the output filter's state from an update at `stamp` (attitude carried into the current body
+  // frame, history entries after the stamp carried along)
+  void applyFilterCorrection(const Eigen::Matrix<double, 15, 1>& dx, const Eigen::Quaternionf& q_ref, double stamp);
+  // VIO odometry (OpenVINS) as measurements of the output filter (odom/iekf/vio/*)
+  void callbackVio(const nav_msgs::msg::Odometry::SharedPtr msg);
 
   // Gated ground-plane z-constraint: fits the dominant ground plane from
   // near-ground points each scan and, when confidence gates pass, softly
@@ -833,6 +838,50 @@ private:
   double iekf_init_std_[5] {1e-2, 1e-2, 1e-1, 1e-3, 1e-2};   // attitude, position, velocity, gyro bias, accel bias
   std::atomic<float> iekf_offset_m_ {0.0f};   // |output filter - observer| position at the last update (m)
   std::atomic<float> iekf_nis_last_ {0.0f};   // NIS of the last filter update (chi-square, 6 dof)
+  // VIO measurements into the output filter (odom/iekf/vio/*): OpenVINS odometry (the rig IMU's pose in the VIO's
+  // own frame, its body-frame velocity in the twist) as a body-velocity measurement and a rotation-delta measurement
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr vio_sub_;
+  bool vio_enabled_ {false};
+  std::string vio_topic_;
+  bool vio_use_velocity_ {true};
+  bool vio_use_rotation_ {true};
+  double vio_velocity_std_ {0.05};            // m/s, when the message carries no twist covariance
+  double vio_velocity_std_min_ {0.02};        // m/s, floor on the twist covariance
+  double vio_rotation_window_sec_ {0.8};      // span of the rotation delta
+  double vio_rotation_std_deg_ {0.3};         // its 1-sigma per axis
+  double vio_max_age_sec_ {0.25};             // older measurements are skipped; younger ones inflate R with their age
+  double vio_gate_sigma_ {3.0};               // innovations beyond this many sigma inflate R (a soft gate, never a drop)
+  double vio_max_speed_mps_ {2.0};            // VIO messages (and priors) implying more than this are skipped: a diverged VIO
+  int vio_max_gated_streak_ {50};             // after this many consecutive gated innovations the updates are suspended until one passes
+  int vio_gated_streak_ {0};
+  double vio_frame_jump_m_ {0.5};             // a position jump above this between consecutive VIO messages = a restarted VIO (new frame)
+  uint64_t vio_frame_resets_ {0};
+  int publish_every_nth_ {1};                  // pointcloud/publishEveryNth: the deskewed cloud goes out on every Nth scan
+  uint64_t publish_scan_counter_ {0};
+  uint64_t vio_implausible_ {0};
+  uint64_t vio_suspended_ {0};
+  Eigen::Matrix3f vio_R_bv_;                  // rig IMU axes in base_link (extrinsics/baselink2vio/R)
+  Eigen::Vector3f vio_t_bv_;                  // rig IMU position in base_link (extrinsics/baselink2vio/t)
+  struct VioSample { double stamp; Eigen::Quaternionf q; Eigen::Vector3f p; Eigen::Vector3f v; };   // rig IMU pose in the VIO's frame, body velocity
+  std::deque<VioSample> vio_history_;         // VIO poses for the rotation delta and the prior, under vio_mtx_
+  mutable std::mutex vio_mtx_;                // guards vio_history_ (taken after geo.mtx, never before it)
+  // The VIO's motion since the last scan as the registration's prior (odom/gicp/prior/vioMode): 0 off,
+  // 1 translation only (the rotation stays the IMU integration's), 2 full. Needs the VIO subscription.
+  int vio_prior_mode_ {0};
+  double vio_prior_max_gap_sec_ {0.08};       // the VIO is extrapolated by its velocity up to this beyond its last message
+  uint64_t vio_prior_used_ {0};
+  uint64_t vio_prior_fallbacks_ {0};
+  std::atomic<float> vio_prior_delta_mm_ {0.0f};   // |VIO prior - IMU prior| translation at the last scan (mm)
+  bool vioPoseAt(double t, Eigen::Quaternionf& q, Eigen::Vector3f& p) const;   // interpolated or extrapolated
+  bool vioPriorPose(double t_prev, double t_now, const Eigen::Quaternionf& q_prev, const Eigen::Vector3f& p_prev,
+                    Eigen::Matrix4f& out) const;
+  void applyVioPrior(Eigen::Matrix4f& delta);   // T_prior := the VIO's when available; delta = new * old^-1
+  uint64_t vio_updates_ {0};
+  uint64_t vio_skipped_ {0};
+  uint64_t vio_gated_ {0};
+  double vio_nis_sum_ {0.0};
+  std::atomic<float> vio_innov_mps_ {0.0f};   // last velocity innovation norm (m/s), diagnostic 75
+  std::atomic<float> vio_nis_last_ {0.0f};    // NIS of the last VIO update, diagnostic 76
   ErrorStateFilter iekf_filter_;              // the covariance; propagated and conditioned under geo.mtx
   double iekf_hessian_scale_;                 // information per unit of the GICP Hessian (odom/iekf/hessianScale)
   Eigen::Matrix<double, 6, 1> iekf_prior_floor_;   // variance floors of the prior pose: attitude x3, position x3
@@ -952,6 +1001,8 @@ private:
   bool recovery_skip_when_timing_active_;
   int recovery_last_attempt_streak_;
   std::vector<double> recovery_yaw_offsets_deg_;
+  bool recovery_reseed_from_filter_ {false};   // odom/gicp/recovery/reseedFromFilter: a rejected registration restarts
+                                               // from the output filter's pose (IMU + VIO) instead of the IMU prior
   State last_accepted_state_;
   Eigen::Matrix4f last_accepted_T_;
 

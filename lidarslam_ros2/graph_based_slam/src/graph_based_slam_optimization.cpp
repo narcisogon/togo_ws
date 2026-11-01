@@ -144,6 +144,54 @@ sensor_msgs::msg::PointCloud2 makeTimedPointCloud2(
   }
   return msg;
 }
+
+std::vector<ColorMapPoint> colorVoxelCentroids(
+  const std::unordered_map<TimedVoxelKey, ColorVoxelAccumulator, TimedVoxelKeyHash> & voxels)
+{
+  std::vector<ColorMapPoint> voxelized;
+  voxelized.reserve(voxels.size());
+  for (const auto & item : voxels) {
+    voxelized.push_back(item.second.centroid());
+  }
+  return voxelized;
+}
+
+/*
+Summary:
+Serialises the coloured map: x y z rgb intensity (FLOAT32) and time (FLOAT64) in 32-byte records, rgb packed
+the PCL way so RViz's RGB8 transformer reads it.
+*/
+sensor_msgs::msg::PointCloud2 makeColoredPointCloud2(
+  const std::vector<ColorMapPoint> & points,
+  const std_msgs::msg::Header & header)
+{
+  sensor_msgs::msg::PointCloud2 msg;
+  msg.header = header;
+  msg.height = 1;
+  msg.width = static_cast<uint32_t>(points.size());
+  msg.is_bigendian = false;
+  msg.is_dense = true;
+  msg.point_step = 32;
+  msg.row_step = msg.point_step * msg.width;
+  writePointCloud2Field(msg, "x", 0, sensor_msgs::msg::PointField::FLOAT32);
+  writePointCloud2Field(msg, "y", 4, sensor_msgs::msg::PointField::FLOAT32);
+  writePointCloud2Field(msg, "z", 8, sensor_msgs::msg::PointField::FLOAT32);
+  writePointCloud2Field(msg, "rgb", 12, sensor_msgs::msg::PointField::FLOAT32);
+  writePointCloud2Field(msg, "intensity", 16, sensor_msgs::msg::PointField::FLOAT32);
+  writePointCloud2Field(msg, "time", 24, sensor_msgs::msg::PointField::FLOAT64);
+  msg.data.resize(static_cast<std::size_t>(msg.row_step));
+  for (std::size_t i = 0; i < points.size(); ++i) {
+    const auto & point = points[i];
+    uint8_t * dst = msg.data.data() + i * msg.point_step;
+    std::memcpy(dst + 0, &point.x, sizeof(float));
+    std::memcpy(dst + 4, &point.y, sizeof(float));
+    std::memcpy(dst + 8, &point.z, sizeof(float));
+    std::memcpy(dst + 12, &point.rgb, sizeof(float));
+    std::memcpy(dst + 16, &point.intensity, sizeof(float));
+    std::memcpy(dst + 24, &point.time, sizeof(double));
+  }
+  return msg;
+}
 }  // namespace
 namespace
 {
@@ -323,6 +371,7 @@ void GraphBasedSlamComponent::doPoseAdjustment(
   std::vector<Eigen::Isometry3d> raw_poses;
   raw_poses.reserve(static_cast<std::size_t>(submaps_size));
   std::vector<std::size_t> adjacent_constraint_indices;
+  std::vector<std::size_t> vio_constraint_indices;
   for (int i = 0; i < submaps_size; i++) {
     Eigen::Affine3d affine;
     Eigen::fromMsg(map_array_msg.submaps[i].pose, affine);
@@ -377,6 +426,31 @@ void GraphBasedSlamComponent::doPoseAdjustment(
         pose_graph.between_constraints.push_back(std::move(constraint));
       }
     }
+    if (use_vio_edge_ && i > 0) {
+      // The VIO's relative base_link pose between the previous submap's stamp and this one's, as a second
+      // constraint on the same pair: independent of the LiDAR registration, so a registration that slid
+      // between the two submaps is pulled back by the cameras.
+      Eigen::Isometry3d vb0;
+      Eigen::Isometry3d vb1;
+      const double t0 = rclcpp::Time(map_array_msg.submaps[i - 1].header.stamp).seconds();
+      const double t1 = rclcpp::Time(map_array_msg.submaps[i].header.stamp).seconds();
+      if (vioBasePoseAt(t0, vb0) && vioBasePoseAt(t1, vb1) && t1 > t0 &&
+        (vb0.inverse() * vb1).translation().norm() / (t1 - t0) <= vio_edge_max_speed_mps_)
+      {
+        optimization::BetweenConstraint vio_constraint;
+        vio_constraint.from = i - 1;
+        vio_constraint.to = i;
+        vio_constraint.measurement = vb0.inverse() * vb1;
+        vio_constraint.kind = optimization::ConstraintKind::ADJACENT;
+        vio_constraint.translation_information = Eigen::Matrix3d::Identity() * vio_edge_info_weight_trans_;
+        vio_constraint.rotation_information = Eigen::Matrix3d::Identity() * vio_edge_info_weight_rot_;
+        vio_constraint_indices.push_back(pose_graph.between_constraints.size());
+        pose_graph.between_constraints.push_back(std::move(vio_constraint));
+      }
+    }
+  }
+  if (use_vio_edge_) {
+    vio_edges_added_ = vio_constraint_indices.size();
   }
   /* IMU rotation constraint edges */
   if (use_imu_preintegration_ && submaps_size > 1) {
@@ -609,6 +683,36 @@ void GraphBasedSlamComponent::doPoseAdjustment(
         adjacent_edge_info_weight_);
     }
   }
+  if (use_vio_edge_ && vio_edge_auto_scale_ && !vio_constraint_indices.empty()) {
+    // the VIO edges' own NIS auto-scale (translation and rotation blocks), same mechanism as the adjacent edges
+    graphslam::detail::AutoScaleConfig vcfg;
+    vcfg.ema_alpha = adjacent_edge_info_auto_scale_ema_alpha_;
+    vcfg.min_scale = adjacent_edge_info_auto_scale_min_;
+    vcfg.max_scale = adjacent_edge_info_auto_scale_max_;
+    vcfg.target_nis = vio_edge_auto_scale_target_nis_;
+    std::vector<double> vio_trans_chi2;
+    std::vector<double> vio_rot_chi2;
+    for (const std::size_t constraint_index : vio_constraint_indices) {
+      const auto & residual = optimization_result.constraint_residuals[constraint_index];
+      const auto & constraint = pose_graph.between_constraints[constraint_index];
+      const double trans = constraint.translation_information(0, 0) * residual.translation.squaredNorm();
+      const double rot = constraint.rotation_information(0, 0) * residual.rotation.squaredNorm();
+      if (std::isfinite(trans)) {vio_trans_chi2.push_back(trans);}
+      if (std::isfinite(rot)) {vio_rot_chi2.push_back(rot);}
+    }
+    const double prev_vio_w_trans = vio_edge_info_weight_trans_;
+    const double prev_vio_w_rot = vio_edge_info_weight_rot_;
+    vio_edge_info_weight_trans_ = graphslam::detail::nextScale(
+      prev_vio_w_trans, graphslam::detail::medianChi2(vio_trans_chi2), vcfg);
+    vio_edge_info_weight_rot_ = graphslam::detail::nextScale(
+      prev_vio_w_rot, graphslam::detail::medianChi2(vio_rot_chi2), vcfg);
+    RCLCPP_INFO(
+      get_logger(),
+      "[vio_edge] %zu edges; trans median_chi2=%.3f w %.1f -> %.1f | rot median_chi2=%.3f w %.1f -> %.1f",
+      vio_constraint_indices.size(), graphslam::detail::medianChi2(vio_trans_chi2), prev_vio_w_trans,
+      vio_edge_info_weight_trans_, graphslam::detail::medianChi2(vio_rot_chi2), prev_vio_w_rot,
+      vio_edge_info_weight_rot_);
+  }
   const double auto_scale_ms = elapsedMillis(stage_start);
 
   /* modified_map publish */
@@ -651,6 +755,9 @@ void GraphBasedSlamComponent::doPoseAdjustment(
     assembled_map_cloud_.reset(new pcl::PointCloud<pcl::PointXYZI>());
     assembled_timed_map_points_.clear();
     assembled_timed_voxels_.clear();
+    assembled_color_voxels_.clear();
+    dem_full_pending_ = true;            // the DEM starts over from this rebuilt map
+    dem_points_sent_ = 0;
     assembled_timed_input_point_count_ = 0;
     assembled_timed_voxel_leaf_size_ = timed_leaf_size;
     assembled_map_array_msg_ = lidarslam_msgs::msg::MapArray();
@@ -726,6 +833,27 @@ void GraphBasedSlamComponent::doPoseAdjustment(
         }
         assembled_timed_input_point_count_ += transformed_cloud_ptr->size();
         timed_voxel_update_ms += elapsedMillis(timed_update_start);
+      }
+      if (texture_enabled_ && texture_leaf_size_ > 0.0) {
+        // the keyframe's gray values ride along: the coloured voxels follow the optimised pose like the timed ones
+        std::vector<uint16_t> gray;
+        {
+          std::lock_guard<std::mutex> lock(mtx_);
+          if (i >= 0 && static_cast<std::size_t>(i) < submap_gray_.size()) {gray = submap_gray_[static_cast<std::size_t>(i)];}
+        }
+        if (gray.size() == transformed_cloud_ptr->size()) {
+          const double submap_time_c = rclcpp::Time(map_array_msg.submaps[i].header.stamp).seconds();
+          const uint32_t submap_index_c = static_cast<uint32_t>(std::max(0, i));
+          for (std::size_t k = 0; k < gray.size(); ++k) {
+            if (gray[k] == 0) {continue;}
+            const auto & point = transformed_cloud_ptr->points[k];
+            TimedVoxelKey key;
+            key.ix = static_cast<int>(std::floor(point.x / texture_leaf_size_));
+            key.iy = static_cast<int>(std::floor(point.y / texture_leaf_size_));
+            key.iz = static_cast<int>(std::floor(point.z / texture_leaf_size_));
+            assembled_color_voxels_[key].add(point, static_cast<uint8_t>(gray[k] - 1), submap_time_c, submap_index_c);
+          }
+        }
       }
       if (do_save_map && use_dynamic_object_filter_) {
         dynamic_filter_submaps.push_back(
@@ -858,7 +986,16 @@ void GraphBasedSlamComponent::doPoseAdjustment(
     cached_modified_map_msg_ = std::move(map_msg);
     regular_cache_update_ms = elapsedMillis(publish_stage_start);
   }
-  if (publish_modified_map_timed_ && modified_map_timed_pub_) {
+  // The timed and coloured maps are serialised at most every modified_map_timed_min_interval_sec (every
+  // submap when 0); a full rebuild or a save always publishes. The heartbeat republishes the cached message.
+  const bool timed_due = !append_only || do_save_map || modified_map_timed_min_interval_sec_ <= 0.0 ||
+    last_timed_map_publish_time_.time_since_epoch().count() == 0 ||
+    std::chrono::duration<double>(std::chrono::steady_clock::now() - last_timed_map_publish_time_).count() >=
+    modified_map_timed_min_interval_sec_;
+  if (timed_due) {
+    last_timed_map_publish_time_ = std::chrono::steady_clock::now();
+  }
+  if (publish_modified_map_timed_ && modified_map_timed_pub_ && timed_due) {
     publish_stage_start = std::chrono::steady_clock::now();
     const auto timed_points_to_publish =
       timed_leaf_size > 0.0 ?
@@ -883,6 +1020,17 @@ void GraphBasedSlamComponent::doPoseAdjustment(
       get_logger(), *get_clock(), 5000,
       "Published /modified_map_timed points %zu -> %zu leaf=%.3fm",
       assembled_timed_input_point_count_, timed_points_to_publish.size(), timed_leaf_size);
+  }
+  if (texture_enabled_ && modified_map_colored_pub_ && timed_due) {
+    std_msgs::msg::Header colored_header;
+    colored_header.frame_id = global_frame_id_;
+    colored_header.stamp = publish_stamp;
+    auto colored_msg = makeColoredPointCloud2(colorVoxelCentroids(assembled_color_voxels_), colored_header);
+    modified_map_colored_pub_->publish(colored_msg);
+    cached_modified_map_colored_msg_ = colored_msg;
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "Published /modified_map_colored %zu voxels (leaf %.2f m)", assembled_color_voxels_.size(), texture_leaf_size_);
   }
   if (publish_modified_map_ || publish_modified_map_timed_ || publish_map_to_odom_tf_) {
     last_periodic_output_publish_time_ = std::chrono::steady_clock::now();
@@ -915,6 +1063,22 @@ void GraphBasedSlamComponent::doPoseAdjustment(
         filter_result.stats.output_points);
     }
     saveGridDividedMap(map_to_save);
+    if (texture_enabled_ && !assembled_color_voxels_.empty()) {
+      pcl::PointCloud<pcl::PointXYZRGB> colored;
+      colored.reserve(assembled_color_voxels_.size());
+      for (const auto & point : colorVoxelCentroids(assembled_color_voxels_)) {
+        pcl::PointXYZRGB p;
+        p.x = point.x;
+        p.y = point.y;
+        p.z = point.z;
+        p.rgb = point.rgb;
+        colored.push_back(p);
+      }
+      colored.width = static_cast<uint32_t>(colored.size());
+      colored.height = 1;
+      pcl::io::savePCDFileBinaryCompressed(map_save_dir_ + "/map_colored.pcd", colored);
+      std::cout << "Saved the coloured map: " << colored.size() << " voxels to " << map_save_dir_ << "/map_colored.pcd" << std::endl;
+    }
   }
   const double grid_map_save_ms = elapsedMillis(stage_start);
 

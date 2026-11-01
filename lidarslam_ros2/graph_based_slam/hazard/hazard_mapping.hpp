@@ -52,6 +52,11 @@ struct Config
   // every residual is inside max_plane_error, where the later passes would recompute the same plane.
   int fit_threads {4};
   bool fit_early_exit {true};
+  // Growth margin (metres): when an observation reaches outside the grid, the growing sides are extended
+  // by this much beyond the observation's padding, so the whole-grid copy that every growth costs is paid
+  // once per margin of travel instead of once per cell. Only the extent changes, never a cell's value;
+  // 0 keeps the former bounds (2026-11-01).
+  double grow_margin {0.0};
   void validate() const;
   bool sameTerrain(const Config & other) const;
 };
